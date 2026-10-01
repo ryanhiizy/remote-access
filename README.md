@@ -150,8 +150,11 @@ The connection does not start Docker, WSL, apps or
 Executor. Reboot/sleep recovery also requires those services to resume.
 
 The installed runtime is copied into the Mac application-data directory, so
-moving or deleting this checkout does not break autostart. After a code update
-or Node installation-path change, run `remote-access install` again. The SSH
+moving or deleting this checkout does not break autostart. If you move or
+reclone it, run `npm link --ignore-scripts` from the new checkout to restore
+the CLI link; the saved configuration and installed connection stay in place.
+After a code update or Node installation-path change, run
+`remote-access install` again. The SSH
 alias is resolved at install time without inherited port forwards; reinstall
 after changing its destination or authentication settings.
 
@@ -163,8 +166,12 @@ remove the key line ending in `remote-access-mac` from the Mac's
 
 To manually restore a migrated agent, stop this service, copy its backed-up
 plist from `~/Library/Application Support/remote-access/backups/` into
-`~/Library/LaunchAgents/`, then bootstrap that plist with `launchctl`. Keep the
-old helper referenced by that plist until you no longer need the backup.
+`~/Library/LaunchAgents/`, then bootstrap that plist with `launchctl`. Restore
+any archived helper to the path in the plist before bootstrapping it. For the
+original Helium helper, copy `helium-tunnel-agent.py` from the backup's
+`legacy-helpers/` directory to `~/.local/share/codex-browser/` if it was archived
+there. Keep the helper or its backup until you no longer need to restore the
+old agent.
 
 For Ender, enable `pnpm remote:access enable` on WSL and start/restart the
 worktree with `pnpm dev`. Its existing `.localhost:8080` URLs and shared OAuth
