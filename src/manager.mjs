@@ -60,7 +60,8 @@ export function probeScript(config) {
     } else {
       const suffix = '/';
       if (name === 'browser') {
-        lines.push(`if curl --max-time 3 -fsS http://127.0.0.1:${service.remotePort}/json/version 2>/dev/null | grep -q '"webSocketDebuggerUrl"'; then echo 'browser ready'; else echo 'browser unavailable'; fi`);
+        const probe = readFileSync(fileURLToPath(new URL('./browser-probe.py', import.meta.url)), 'utf8');
+        lines.push(`python3 -c ${shellQuote(probe)} ${service.remotePort}`);
         continue;
       }
       lines.push(`code=$(curl --max-time 3 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${service.remotePort}${suffix} 2>/dev/null || true)`);

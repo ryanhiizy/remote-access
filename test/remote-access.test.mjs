@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -7,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { connectionConfig, defaultConfig, label, locations, shellQuote, sshArgs, tunnelPlist, validateConfig } from '../src/config.mjs';
-import { install, inventory, privateWrite, status, tcpReady } from '../src/manager.mjs';
+import { install, inventory, privateWrite, probeScript, status, tcpReady } from '../src/manager.mjs';
 import { browserRelay, readEndpoint, remoteCommand } from '../src/worker.mjs';
 
 function temporary(t) {
@@ -219,6 +221,35 @@ test('remote browser metadata protocol updates, removes and rejects invalid path
   const rejected = spawnSync('/bin/sh', ['-c', script], { env: { ...process.env, HOME: home }, encoding: 'utf8', input: '{"path":"../../bad"}\n' });
   assert.notEqual(rejected.status, 0);
   assert.equal(existsSync(metadata), false);
+});
+
+test('browser status supports native WebSocket-only debugging and rejects stale metadata', async t => {
+  const home = temporary(t);
+  const server = createHttpServer((_request, response) => { response.writeHead(404); response.end(); });
+  server.on('upgrade', (request, socket) => {
+    if (request.url !== '/devtools/browser/native') { socket.end('HTTP/1.1 404 Not Found\r\n\r\n'); return; }
+    const accept = createHash('sha1').update(`${request.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.end(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const port = server.address().port;
+  const metadata = path.join(home, '.local/share/codex-browser/mac-profile/DevToolsActivePort');
+  privateWrite(metadata, `${port}\n/devtools/browser/native\n`);
+  const config = validateConfig({ version: 1, host: 'target', services: { browser: { localPort: 19222, remotePort: port, profile: '/Users/test/profile' } } });
+  const probe = async () => {
+    const child = spawn('/bin/sh', ['-s'], { env: { ...process.env, HOME: home } });
+    let output = '';
+    child.stdout.on('data', data => { output += data; });
+    child.stdin.end(probeScript(config));
+    const [code] = await once(child, 'close');
+    assert.equal(code, 0);
+    return output.trim();
+  };
+  assert.equal(await probe(), 'browser ready');
+  privateWrite(metadata, `${port}\n/devtools/browser/stale\n`);
+  assert.equal(await probe(), 'browser unavailable');
 });
 
 test('inventory leaves unrelated services out of migration candidates', t => {

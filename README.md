@@ -144,7 +144,9 @@ remote-access uninstall
 
 `status` checks the managed process and the actual services, not just whether a
 tunnel port is open. Missing apps, closed Helium and disabled Remote Login are
-reported independently. The connection does not start Docker, WSL, apps or
+reported independently. Browser status verifies Helium's native WebSocket
+handshake; it does not require `/json/version` or issue browser commands.
+The connection does not start Docker, WSL, apps or
 Executor. Reboot/sleep recovery also requires those services to resume.
 
 The installed runtime is copied into the Mac application-data directory, so
