@@ -181,5 +181,4 @@ gateway or fixed service port.
 ## Development
 
 No npm dependencies are required. Run `npm run check` for JavaScript syntax
-checks. CI runs these checks on Linux and macOS with Node 22 and 26. Verify
-changes to connection behaviour on a live Mac/WSL setup.
+checks. Verify changes to connection behaviour on a live Mac/WSL setup.
