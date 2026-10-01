@@ -1,0 +1,9 @@
+{
+  "name": "mac-wsl-remote-access",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "remote-access": "bin/remote-access.mjs" },
+  "scripts": { "test": "node --test", "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs && node --test" },
+  "engines": { "node": ">=22" }
+}

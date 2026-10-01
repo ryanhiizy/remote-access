@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "host": "your-wsl-ssh-alias",
+  "services": {
+    "app": { "localPort": 8080, "remotePort": 8080 },
+    "executor": false,
+    "browser": { "localPort": 19222, "remotePort": 9223, "profile": "/Users/your-mac-username/Library/Application Support/net.imput.helium" },
+    "macLogin": { "localPort": 22, "remotePort": 2222, "user": "your-mac-username" }
+  },
+  "replaceAgents": []
+}
