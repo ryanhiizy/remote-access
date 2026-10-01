@@ -3,7 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "remote-access": "bin/remote-access.mjs" },
-  "scripts": { "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs" },
-  "engines": { "node": ">=22" }
+  "bin": {
+    "remote-access": "bin/remote-access.mjs"
+  },
+  "scripts": {
+    "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs && node --check src/browser-service.mjs && node --check src/browser-client.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "chrome-devtools-mcp": "1.10.1"
+  }
 }

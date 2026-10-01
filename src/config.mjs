@@ -1,5 +1,15 @@
 import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
+
+export function readEndpoint(profile) {
+  try {
+    const [port, websocket, extra] = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
+    if (extra !== undefined || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535
+      || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(websocket ?? '')) return null;
+    return { port: Number(port), path: websocket };
+  } catch { return null; }
+}
 
 export const label = 'io.github.ryanhiizy.remote-access';
 export const serviceNames = ['app', 'executor', 'browser', 'macLogin'];
@@ -49,6 +59,8 @@ export function validateConfig(input) {
         throw new Error('browser.profile must be the absolute path to your existing Helium profile.');
       }
       services[name].profile = service.profile;
+      if (service.shared !== undefined && typeof service.shared !== 'boolean') throw new Error('browser.shared must be boolean.');
+      services[name].shared = service.shared ?? false;
     }
     if (name === 'macLogin') {
       if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(service.user ?? '')) {
@@ -71,7 +83,7 @@ export function defaultConfig(host, macLogin = false) {
     version: 1, host,
     services: {
       app: { localPort: 8080, remotePort: 8080 },
-      browser: { localPort: 19222, remotePort: 9223, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
+      browser: { localPort: 19222, remotePort: 9223, shared: true, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
       ...(macLogin ? { macLogin: { localPort: 22, remotePort: 2222, user: userInfo().username } } : {}),
     },
   });

@@ -2,16 +2,8 @@ import { spawn } from 'node:child_process';
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import path from 'node:path';
-import { shellQuote, sshArgs, validateConfig } from './config.mjs';
-
-export function readEndpoint(profile) {
-  try {
-    const [port, websocket, extra] = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
-    if (extra !== undefined || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535
-      || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(websocket ?? '')) return null;
-    return { port: Number(port), path: websocket };
-  } catch { return null; }
-}
+import { readEndpoint, shellQuote, sshArgs, validateConfig } from './config.mjs';
+export { readEndpoint } from './config.mjs';
 
 export function browserRelay(profile) {
   const sockets = new Set();
@@ -29,7 +21,7 @@ export function browserRelay(profile) {
 }
 
 export function remoteCommand(browser) {
-  if (!browser) return "printf 'REMOTE_ACCESS_READY\\n'; cat >/dev/null";
+  if (!browser || browser.shared) return "printf 'REMOTE_ACCESS_READY\\n'; cat >/dev/null";
   // Metadata is the only browser data copied. WSL's existing --autoConnect
   // integration uses this mirror; the real signed-in profile stays on the Mac.
   const code = `import json, os, pathlib, re, sys
@@ -66,7 +58,11 @@ export async function supervise(directory) {
   };
   const stop = () => { stopped = true; child?.kill('SIGTERM'); wake?.(); };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
-  const relay = config.services.browser ? browserRelay(config.services.browser.profile) : null;
+  const browser = config.services.browser;
+  const relay = browser ? (browser.shared
+    ? (await import('./browser-service.mjs')).sharedBrowserService(browser.profile,
+      readFileSync(path.join(directory, 'runtime/browser-token'), 'utf8').trim())
+    : browserRelay(browser.profile)) : null;
   if (relay) {
     await new Promise((resolve, reject) => {
       relay.server.once('error', reject);
@@ -82,7 +78,7 @@ export async function supervise(directory) {
       let output = '';
       let previous;
       const publish = () => {
-        if (!ready || !config.services.browser) return;
+        if (!ready || !config.services.browser || config.services.browser.shared) return;
         const endpoint = readEndpoint(config.services.browser.profile);
         const value = JSON.stringify(endpoint ? { path: endpoint.path } : null);
         if (value !== previous && !child.stdin.destroyed) {
@@ -110,7 +106,7 @@ export async function supervise(directory) {
       }
     }
   } finally {
-    relay?.close(); record('stopped');
+    await relay?.close(); record('stopped');
     process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
   }
 }

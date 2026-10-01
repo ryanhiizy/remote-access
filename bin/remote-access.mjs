@@ -85,7 +85,7 @@ export async function main(args = process.argv.slice(2)) {
     if (report.remoteError) console.log(`  remote check: ${report.remoteError}`);
     if (report.side === 'mac') console.log(`Log: ${report.log}`);
   }
-  if (Object.values(report.services).some(state => state !== 'ready') || (report.tunnel && report.tunnel !== 'running')) process.exitCode = 1;
+  if (Object.values(report.services).some(state => !['ready', 'available'].includes(state)) || (report.tunnel && report.tunnel !== 'running')) process.exitCode = 1;
 }
 
 try { await main(); } catch (error) { console.error(error.message); process.exitCode = 1; }

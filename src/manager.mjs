@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +53,31 @@ export const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
   socket.once('error', () => finish(false));
 });
 
+export function browserStatus(port) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    let buffer = '';
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true; socket.destroy();
+      if (error) reject(error); else resolve(result);
+    };
+    socket.setEncoding('utf8');
+    socket.setTimeout(3000, () => finish(new Error('Browser status timed out.')));
+    socket.on('connect', () => socket.write('{"jsonrpc":"2.0","id":1,"method":"remote-access/status"}\n'));
+    socket.on('data', data => {
+      buffer += data;
+      if (buffer.length > 16384) { finish(new Error('Invalid browser status.')); return; }
+      if (!buffer.includes('\n')) return;
+      try { finish(null, JSON.parse(buffer.split('\n')[0]).result); }
+      catch (error) { finish(error); }
+    });
+    socket.on('error', error => finish(error));
+    socket.on('end', () => finish(new Error('Browser service closed without status.')));
+  });
+}
+
 export function probeScript(config) {
   const lines = ['set -u'];
   for (const [name, service] of Object.entries(config.services)) {
@@ -61,7 +87,7 @@ export function probeScript(config) {
       const suffix = '/';
       if (name === 'browser') {
         const probe = readFileSync(fileURLToPath(new URL('./browser-probe.py', import.meta.url)), 'utf8');
-        lines.push(`python3 -c ${shellQuote(probe)} ${service.remotePort}`);
+        lines.push(`python3 -c ${shellQuote(probe)} ${service.remotePort}${service.shared ? ' shared' : ''}`);
         continue;
       }
       lines.push(`code=$(curl --max-time 3 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${service.remotePort}${suffix} 2>/dev/null || true)`);
@@ -107,6 +133,11 @@ export async function status(config, { platform = process.platform, home = homed
     }
   } catch (error) { result.remoteError = error.message; }
   for (const name of Object.keys(config.services)) result.services[name] ??= 'unavailable';
+  if (platform === 'darwin' && config.services.browser?.shared) {
+    try {
+      result.browser = await browserStatus(config.services.browser.localPort);
+    } catch { /* Service state is already reported by the passive remote probe. */ }
+  }
   return result;
 }
 
@@ -168,10 +199,20 @@ export async function install(input, { platform = process.platform, home = homed
   const previousConfig = existsSync(paths.config) ? readFileSync(paths.config) : null;
   const sshFile = path.join(paths.directory, 'tunnel-ssh.conf');
   const previousSsh = existsSync(sshFile) ? readFileSync(sshFile) : null;
-  const runtime = ['worker.mjs', 'config.mjs'].map(module => {
+  const runtime = ['worker.mjs', 'config.mjs', 'browser-service.mjs', 'browser-client.mjs'].map(module => {
     const file = path.join(paths.directory, 'runtime', module);
     return { module, file, previous: existsSync(file) ? readFileSync(file) : null };
   });
+  const dependency = path.join(paths.directory, 'runtime/node_modules/chrome-devtools-mcp');
+  const tokenFile = path.join(paths.directory, 'runtime/browser-token');
+  const previousToken = existsSync(tokenFile) ? readFileSync(tokenFile) : null;
+  const hadDependency = existsSync(dependency);
+  // Pinned package bundles its runtime; optional peers are not enabled here.
+  const dependencySource = config.services.browser?.shared
+    ? path.resolve(path.dirname(fileURLToPath(import.meta.resolve('chrome-devtools-mcp'))), '../..') : null;
+  const dependencyChanged = dependencySource && (!hadDependency
+    || JSON.parse(readFileSync(path.join(dependency, 'package.json'), 'utf8')).version
+      !== JSON.parse(readFileSync(path.join(dependencySource, 'package.json'), 'utf8')).version);
   mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
   const backup = path.join(paths.directory, 'backups', `${Date.now()}-${process.pid}`);
   mkdirSync(backup, { recursive: true, mode: 0o700 });
@@ -179,6 +220,7 @@ export async function install(input, { platform = process.platform, home = homed
   if (previousConfig) privateWrite(path.join(backup, 'config.json'), previousConfig);
   if (previousSsh) privateWrite(path.join(backup, 'tunnel-ssh.conf'), previousSsh);
   for (const file of runtime) if (file.previous) privateWrite(path.join(backup, 'runtime', file.module), file.previous);
+  if (dependencyChanged && hadDependency) cpSync(dependency, path.join(backup, 'browser-package'), { recursive: true });
   const authorized = path.join(home, '.ssh/authorized_keys');
   const previousAuthorized = existsSync(authorized) ? readFileSync(authorized) : null;
   const remoteBackup = `migration-${Date.now()}-${process.pid}`;
@@ -187,7 +229,7 @@ umask 077
 directory="$HOME/.config/remote-access"
 backup="$directory/backups/${remoteBackup}"
 mkdir -p "$backup"
-for file in config.json mac-ssh.conf mac_known_hosts; do
+for file in config.json mac-ssh.conf mac_known_hosts browser-client.mjs browser-token; do
   if [ -f "$directory/$file" ]; then cp "$directory/$file" "$backup/$file"; else touch "$backup/$file.absent"; fi
 done
 `, execute);
@@ -198,18 +240,35 @@ done
     for (const agent of snapshots) if (agent.loaded) {
       execute('/bin/launchctl', ['bootout', `${domain}/${agent.label}`]);
       stopped.add(agent.label);
+      // launchd can return before the old job has finished unloading.
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try { execute('/bin/launchctl', ['print', `${domain}/${agent.label}`]); }
+        catch { break; }
+        await pause(250);
+      }
     }
     privateWrite(sshFile, connectionConfig(resolved, home));
     privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
     for (const file of runtime) {
       privateWrite(file.file, readFileSync(fileURLToPath(new URL(`./${file.module}`, import.meta.url))));
     }
+    if (config.services.browser?.shared && !previousToken) privateWrite(tokenFile, randomBytes(32).toString('hex'));
+    if (dependencyChanged) {
+      rmSync(dependency, { recursive: true, force: true });
+      cpSync(dependencySource, dependency, { recursive: true });
+    }
     // Snapshot runtime files so the connection survives moving/deleting the checkout.
     // Create logs with private permissions before launchd opens them.
     if (!existsSync(paths.log)) privateWrite(paths.log, '');
     privateWrite(paths.plist, tunnelPlist(config, paths));
     execute('/usr/bin/plutil', ['-lint', paths.plist]);
-    execute('/bin/launchctl', ['bootstrap', domain, paths.plist]);
+    for (let attempt = 0; ; attempt++) {
+      try { execute('/bin/launchctl', ['bootstrap', domain, paths.plist]); break; }
+      catch (error) {
+        if (attempt >= 3 || !error.message.includes('Bootstrap failed: 5:')) throw error;
+        await pause(500 * (attempt + 1));
+      }
+    }
     newLoaded = true;
     let running = false;
     for (let attempt = 0; attempt < 50; attempt++) {
@@ -239,6 +298,11 @@ done
     // Reinstalls use the saved configuration without already-migrated labels.
     const installed = { ...config, replaceAgents: [] };
     ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(`${JSON.stringify(installed, null, 2)}\n`)} > "$HOME/.config/remote-access/config.json"\nchmod 600 "$HOME/.config/remote-access/config.json"\n`, execute);
+    if (config.services.browser?.shared) {
+      const client = readFileSync(fileURLToPath(new URL('./browser-client.mjs', import.meta.url)), 'utf8');
+      ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(client)} > "$HOME/.config/remote-access/browser-client.mjs"\nchmod 600 "$HOME/.config/remote-access/browser-client.mjs"\n`, execute);
+      ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > "$HOME/.config/remote-access/browser-token"\nchmod 600 "$HOME/.config/remote-access/browser-token"\n`, execute);
+    }
     privateWrite(paths.config, `${JSON.stringify(installed, null, 2)}\n`);
     for (const agent of snapshots) if (agent.label !== label) rmSync(agent.file);
     return { config: paths.config, backup, log: paths.log };
@@ -254,6 +318,11 @@ done
     for (const file of runtime) {
       if (file.previous) privateWrite(file.file, file.previous); else rmSync(file.file, { force: true });
     }
+    if (!previousToken) rmSync(tokenFile, { force: true });
+    if (dependencyChanged) {
+      rmSync(dependency, { recursive: true, force: true });
+      if (hadDependency) cpSync(path.join(backup, 'browser-package'), dependency, { recursive: true });
+    }
     if (config.services.macLogin) {
       if (previousAuthorized) privateWrite(authorized, previousAuthorized); else rmSync(authorized, { force: true });
     }
@@ -261,7 +330,7 @@ done
       ssh(config, `set -eu
 directory="$HOME/.config/remote-access"
 backup="$directory/backups/${remoteBackup}"
-for file in config.json mac-ssh.conf mac_known_hosts; do
+for file in config.json mac-ssh.conf mac_known_hosts browser-client.mjs browser-token; do
   if [ -f "$backup/$file.absent" ]; then rm -f "$directory/$file"; else cp "$backup/$file" "$directory/$file"; fi
 done
 `, execute);

@@ -11,7 +11,7 @@ repositories keep their app routing and authentication behaviour.
 
 ## Requirements
 
-- Mac: Node.js 22 or newer, an SSH alias that reaches your WSL SSH server, and
+- Mac: Node.js 22.12 or newer, an SSH alias that reaches your WSL SSH server, and
   unattended SSH key authentication. Resolve host-key trust using ordinary SSH
   before installing. Encrypted keys need an available agent or macOS Keychain.
 - WSL: an SSH server, Python 3.9 or newer, `curl`, `ss`, `timeout` and OpenSSH
@@ -30,6 +30,7 @@ repositories keep their app routing and authentication behaviour.
 ```sh
 git clone https://github.com/ryanhiizy/remote-access.git
 cd remote-access
+npm ci --ignore-scripts
 npm link --ignore-scripts
 remote-access init --host YOUR_WSL_ALIAS --mac-login
 remote-access inspect
@@ -75,17 +76,28 @@ verifies the new connection are the replaced plist files removed. Failures
 restore previous files and loaded services. Saved `replaceAgents` is cleared
 after a successful migration, so subsequent reinstalls do not migrate twice.
 
-Browser control follows Helium's changing debug port through a stable Mac relay.
-Closing/restarting Helium leaves app and Mac SSH forwarding available. Only
-`DevToolsActivePort` metadata is mirrored into WSL's
-`~/.local/share/codex-browser/mac-profile` for the existing Executor connection.
+With `browser.shared: true`, one browser manager in the installed Mac service
+holds the approved Helium connection. Mac and WSL MCP clients get independent
+tab selections while sharing that connection. Client exits and SSH reconnections
+do not close it. The first browser tool call requests approval; closing/restarting
+Helium, restarting this service, or losing the browser connection requires a new
+approval on the next tool call. The service never clicks the approval dialog.
+A tool call racing a client/tunnel disconnect may fail once; retry after the
+connection recovers. Browser operations are not replayed automatically.
+
+Existing configurations without `browser.shared` retain the legacy raw browser
+relay and metadata mirror. To upgrade, run `npm ci --ignore-scripts`, set
+`browser.shared` to `true` in your personal config, reinstall, then switch both
+browser integrations to the client commands below. The new service port speaks
+MCP JSON messages, so legacy `--autoConnect` clients cannot use that port.
+The actual Helium profile and browser debugging port remain unchanged.
 
 ## Connections and ports
 
 | Service | Direction | Default ports | What must already be running |
 |---|---|---|---|
 | `app` | Mac → WSL | Mac 8080 → WSL 8080 | Your app gateway |
-| `browser` | WSL → Mac | WSL 9223 → Mac relay 19222 → current Helium debug port | Existing Helium with debugging enabled |
+| `browser` | WSL → Mac | WSL 9223 → Mac shared browser service 19222 → Helium | Existing Helium with debugging enabled |
 | `macLogin` | WSL → Mac | WSL 2222 → Mac 22 | Mac Remote Login |
 | `executor` (optional) | Mac → WSL | Configure e.g. Mac 14789 → WSL 4789 | WSL Executor daemon |
 
@@ -101,7 +113,8 @@ back. Use `GatewayPorts no` or `clientspecified` on that SSH server.
 
 ## Use from WSL
 
-Clone this repo on WSL and run `npm link --ignore-scripts` there too. The Mac
+Clone this repo on WSL and run `npm link --ignore-scripts` there too. WSL clients
+do not need the Mac-only browser dependency. The Mac
 installer writes WSL settings to `~/.config/remote-access/`.
 
 ```sh
@@ -124,13 +137,27 @@ SSH access does not automatically mount Mac folders in WSL or grant desktop
 automation permissions. Assistants running on WSL can use this SSH connection
 through their terminal tools; installing it does not add a shell tool to Executor.
 
-For a fresh Executor browser integration on WSL, configure its stdio MCP server
-to run `npx -y chrome-devtools-mcp@1.10.1 --autoConnect
---user-data-dir=/home/YOUR_WSL_USER/.local/share/codex-browser/mac-profile
---no-usage-statistics --no-performance-crux`, with slug `helium_mac`. Use the
-same slug on the Mac with the actual existing Helium profile. Existing registered
-integrations continue to work; this installer leaves them untouched.
+For Executor, retain the `helium_mac` integration slug and its `org/default`
+connection. Configure a stdio MCP server using `node` with these arguments:
 
+- Mac: `"/Users/YOUR_MAC_USER/Library/Application Support/remote-access/runtime/browser-client.mjs", "19222"`
+- WSL: `"/home/YOUR_WSL_USER/.config/remote-access/browser-client.mjs", "9223"`
+
+Use the configured browser local/remote ports if you changed the defaults.
+The Mac installer copies `src/browser-client.mjs` to the WSL path; the client
+has no dependencies.
+Use an absolute Node executable available to Executor on each machine.
+Keep this client persistent (`spawnPerCall: false`). If Executor requires
+removing/re-registering an existing integration, first save its configuration
+and restore the same slug and connection name. Other integrations are unchanged.
+The installer does not change Executor settings automatically. It creates a
+private `browser-token` beside each installed client; MCP clients must present
+that token to use the shared service. Keep it outside Git. Reinstalls retain the
+token, and passive status queries never authenticate a browser-control session.
+
+Browser tools and screenshots now run on the Mac. File-writing tools use the
+Mac filesystem and negotiated MCP roots, not WSL paths. Transfer needed files
+with the Mac SSH connection.
 ## Status, upgrades and removal
 
 ```sh
@@ -142,10 +169,15 @@ remote-access restart
 remote-access uninstall
 ```
 
-`status` checks the managed process and the actual services, not just whether a
-tunnel port is open. Missing apps, closed Helium and disabled Remote Login are
-reported independently. Browser status verifies Helium's native WebSocket
-handshake; it does not require `/json/version` or issue browser commands.
+`status` checks the managed process and enabled services. Browser checks are
+passive: they read the shared service's connection state without connecting to
+Helium. `ready` means an approved connection is still open; `available` means
+debugging metadata is present but control has not been approved; it is not proof
+of usable browser control. `waiting-for-approval` and `unavailable` return a
+nonzero status. Legacy browser checks report only TCP reachability as
+`available`, never upgrade to WebSocket, and do not prove approval. Shared
+browser JSON status includes a connection ID/count so reuse can be verified.
+Missing apps and disabled Remote Login are reported independently.
 The connection does not start Docker, WSL, apps or
 Executor. Reboot/sleep recovery also requires those services to resume.
 
@@ -153,8 +185,8 @@ The installed runtime is copied into the Mac application-data directory, so
 moving or deleting this checkout does not break autostart. If you move or
 reclone it, run `npm link --ignore-scripts` from the new checkout to restore
 the CLI link; the saved configuration and installed connection stay in place.
-After a code update or Node installation-path change, run
-`remote-access install` again. The SSH
+After a code update, run `npm ci --ignore-scripts` and
+`remote-access install` again. Reinstall after a Node installation-path change too. The SSH
 alias is resolved at install time without inherited port forwards; reinstall
 after changing its destination or authentication settings.
 
@@ -180,5 +212,9 @@ gateway or fixed service port.
 
 ## Development
 
-No npm dependencies are required. Run `npm run check` for JavaScript syntax
-checks. Verify changes to connection behaviour on a live Mac/WSL setup.
+The shared service uses the pinned `chrome-devtools-mcp` package and its bundled
+MCP/Puppeteer runtime. The installer copies that package into private runtime
+storage; moving the checkout does not break autostart. Updating this dependency
+requires checking its BrowserManager/McpServer library interface.
+Run `npm run check` for JavaScript syntax checks. Verify connection reuse,
+client isolation, and passive status on a live Mac/WSL setup.

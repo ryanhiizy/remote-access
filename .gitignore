@@ -5,3 +5,4 @@ config.local.json
 *.plist
 *.pem
 *.key
+browser-token
