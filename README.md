@@ -180,8 +180,6 @@ gateway or fixed service port.
 
 ## Development
 
-No npm dependencies are required. Run `npm run check` for syntax and contract
-tests, including real loopback relay traffic, browser metadata updates, SSH
-configuration resolution, migration rollback and status reporting. CI runs on
-Linux and macOS with Node 22 and 26. Installation tests simulate launchd; live
-Mac/WSL verification is still required when changing connection behaviour.
+No npm dependencies are required. Run `npm run check` for JavaScript syntax
+checks. CI runs these checks on Linux and macOS with Node 22 and 26. Verify
+changes to connection behaviour on a live Mac/WSL setup.

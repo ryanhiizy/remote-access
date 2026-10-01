@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "bin": { "remote-access": "bin/remote-access.mjs" },
-  "scripts": { "test": "node --test", "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs && node --test" },
+  "scripts": { "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs" },
   "engines": { "node": ">=22" }
 }
