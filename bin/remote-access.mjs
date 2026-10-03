@@ -3,6 +3,8 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { defaultConfig, label, locations, shellQuote, tunnelPlist, validateConfig } from '../src/config.mjs';
 import { install, inventory, privateWrite, run, start, status, stop } from '../src/manager.mjs';
+import { openBrowser } from '../src/browser-open.mjs';
+import { installBrowserRouting } from '../src/browser-routing.mjs';
 
 const help = `Usage: remote-access <command> [options]
 
@@ -15,6 +17,8 @@ const help = `Usage: remote-access <command> [options]
   logs                                 Show the last 60 tunnel log lines
   uninstall                            Stop and remove our LaunchAgent only
   mac -- COMMAND [ARG...]              Run a command on the Mac from WSL
+  open HTTP_OR_HTTPS_URL               Open a tab in your existing Mac Helium profile
+  browser-install                      Route remote Linux URL openers through Helium
 
 Options: --config FILE, --host SSH_ALIAS, --mac-login, --replace LABEL (repeatable), --json
 Configuration defaults to the user's remote-access application-data directory.
@@ -24,6 +28,20 @@ Remote Login and broader disk permissions must be enabled on the Mac itself.
 export async function main(args = process.argv.slice(2)) {
   if (!args.length || args[0] === '--help' || (args[0] !== 'mac' && args.includes('--help'))) { console.log(help); return; }
   const command = args[0];
+  if (command === 'open') {
+    if (process.platform === 'darwin') throw new Error('Run open from the remote Linux machine.');
+    const rest = args.slice(1);
+    if (rest[0] === '--') rest.shift();
+    if (rest.length !== 1) throw new Error('Usage: remote-access open HTTP_OR_HTTPS_URL');
+    await openBrowser(rest[0]);
+    return;
+  }
+  if (command === 'browser-install') {
+    if (args.length !== 1) throw new Error('Usage: remote-access browser-install');
+    console.log(JSON.stringify(installBrowserRouting(), null, 2));
+    console.log('Keep ~/.local/bin on PATH. Set BROWSER to the reported browser executable for clients that use that variable.');
+    return;
+  }
   if (command === 'mac') {
     if (process.platform === 'darwin') throw new Error('Run mac from WSL.');
     const rest = args.slice(1);
