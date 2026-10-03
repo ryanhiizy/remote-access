@@ -158,6 +158,43 @@ token, and passive status queries never authenticate a browser-control session.
 Browser tools and screenshots now run on the Mac. File-writing tools use the
 Mac filesystem and negotiated MCP roots, not WSL paths. Transfer needed files
 with the Mac SSH connection.
+
+### Open web links from remote Linux
+
+Browser control and opening web links are separate entry points. To open a URL
+in your existing Mac Helium session from WSL (requires `macLogin`):
+
+```sh
+remote-access open 'https://example.com/'
+remote-access browser-install
+export BROWSER="$HOME/.local/bin/remote-access-browser"
+```
+
+`browser-install` snapshots the dependency-free opener into the WSL application
+data directory and installs per-user `xdg-open`, `sensible-browser` and
+`www-browser` helpers. Keep `~/.local/bin` before system directories on PATH;
+persist `BROWSER` in your shell environment and service environment for clients
+that use it. The helpers use Mac SSH to ask the running Helium app to open the
+URL. These are ordinary user-owned tabs, independent of an MCP client exiting.
+Browser automation keeps using the approved shared browser manager. The opener
+does not launch a browser if Helium is closed. Installation saves files in private
+backups. Non-web `xdg-open` arguments continue to the system helper.
+
+The opener confirms the Mac URL-open command before returning success. This
+confirms dispatch, not page loading or authentication. A missing tunnel, closed
+Helium or failed Mac command returns a nonzero exit status.
+It does not print URLs, which can contain login codes, and does not replay an
+uncertain navigation automatically. It accepts HTTP/HTTPS URLs only.
+
+Addresses are resolved by the Mac browser. The configured app tunnel makes
+WSL port 8080 reachable at Mac `http://localhost:8080`; other WSL localhost
+ports need their own forwarding. An OAuth callback to a temporary WSL
+localhost port is not made reachable merely by opening its login page on the
+Mac. Use that provider's remote login/code flow in an interactive terminal,
+keep its process alive until credentials are saved, and verify authentication
+on WSL afterward. Do not run interactive login processes from session hooks
+with disconnected input.
+
 ## Status, upgrades and removal
 
 ```sh
