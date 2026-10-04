@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmS
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { browserLabel, connectionConfig, hostArgs, label, locations, plist, shellQuote, sshArgs, validateConfig } from './config.mjs';
+import { browserLabel, label, locations, plist, shellQuote, sshArgs, validateConfig } from './config.mjs';
 
 export function run(program, args, options = {}) {
   const result = spawnSync(program, args, { encoding: 'utf8', timeout: 30000, ...options });
@@ -25,7 +25,7 @@ export function privateWrite(file, text, mode = 0o600) {
 
 // Direct SSH to WSL (not through the tunnel), for setup and status.
 const ssh = (config, script) => run('/usr/bin/ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
-  '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10', ...hostArgs(config), config.host, '/bin/sh -s'], { input: script });
+  '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10', config.host, '/bin/sh -s'], { input: script });
 
 const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
@@ -75,10 +75,10 @@ key="$HOME/.config/remote-access/mac_ed25519"
 cat "$key.pub"
 `).trim().split(/\s+/).slice(0, 2).join(' ');
   if (!/^ssh-ed25519 [A-Za-z0-9+/=]+$/.test(key)) throw new Error('WSL returned an invalid SSH public key.');
-  // Loopback for local use, plus the Tailscale range (100.64.0.0/10) WSL connects from.
+  // WSL connects only over Tailscale (100.64.0.0/10).
   const authorized = path.join(home, '.ssh/authorized_keys');
   const lines = (existsSync(authorized) ? readFileSync(authorized, 'utf8') : '').split('\n').filter(line => line && !line.includes(key));
-  privateWrite(authorized, `${[...lines, `from="127.0.0.1,::1,100.64.0.0/10",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ${key} remote-access-mac`].join('\n')}\n`);
+  privateWrite(authorized, `${[...lines, `from="100.64.0.0/10",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ${key} remote-access-mac`].join('\n')}\n`);
   const macConfig = `Host mac-remote\n  HostName ${service.address}\n  User ${service.user}\n  IdentityFile ~/.config/remote-access/mac_ed25519\n  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n  HostKeyAlias remote-access-mac\n  UserKnownHostsFile ~/.config/remote-access/mac_known_hosts\n  ConnectTimeout 5\n`;
   ssh(config, `set -eu; umask 077; cd "$HOME/.config/remote-access"
 printf %s ${shellQuote(macConfig)} > mac-ssh.conf
@@ -119,7 +119,6 @@ export async function install(input, home = homedir()) {
   const config = validateConfig(input);
   const paths = locations(home, 'darwin');
   const runtime = path.join(paths.directory, 'runtime');
-  const resolved = run('/usr/bin/ssh', ['-G', ...hostArgs(config), config.host]);
   ssh(config, 'true\n');
   if (config.services.macLogin && !(await tcpReady(22))) {
     throw new Error('Enable Mac Remote Login in System Settings → General → Sharing, then retry.');
@@ -128,10 +127,6 @@ export async function install(input, home = homedir()) {
   await stop(home);
 
   privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
-  const sshConfig = path.join(paths.directory, 'tunnel-ssh.conf');
-  privateWrite(sshConfig, connectionConfig(resolved, home));
-  // Left over from the former Node supervisor.
-  for (const stale of [path.join(runtime, 'worker.mjs'), path.join(paths.directory, 'state.json')]) rmSync(stale, { force: true });
   for (const module of ['config.mjs', 'browser-service.mjs', 'browser-client.mjs']) {
     privateWrite(path.join(runtime, module), readFileSync(fileURLToPath(new URL(`./${module}`, import.meta.url))));
   }
@@ -149,7 +144,7 @@ export async function install(input, home = homedir()) {
   }
 
   const [tunnelPlist, browserPlist] = plists(paths);
-  privateWrite(tunnelPlist, plist(label, ['/usr/bin/ssh', ...sshArgs(config, sshConfig)], path.join(paths.directory, 'tunnel.log')), 0o644);
+  privateWrite(tunnelPlist, plist(label, ['/usr/bin/ssh', ...sshArgs(config)], path.join(paths.directory, 'tunnel.log')), 0o644);
   if (config.services.browser) {
     const { localPort, profile } = config.services.browser;
     privateWrite(browserPlist, plist(browserLabel, [process.execPath, path.join(runtime, 'browser-service.mjs'), String(localPort), profile, tokenFile],

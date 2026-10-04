@@ -34,11 +34,10 @@ function port(value, minimum, name) {
 
 const hostname = /^[A-Za-z0-9][A-Za-z0-9.:_-]*$/;
 
-// host: SSH alias from the Mac to WSL. address (optional): overrides its
-// HostName, e.g. the WSL machine's Tailscale name, keeping the alias's auth.
+// host: the WSL machine's Tailscale name (or an SSH alias for it).
 export function validateConfig(input) {
   if (input?.version !== 1 || !hostname.test(input.host ?? '')) {
-    throw new Error('Use version 1 and an SSH host alias without spaces or options.');
+    throw new Error('Use version 1 and host set to the WSL Tailscale name.');
   }
   const { app, browser, macLogin } = input.services ?? {};
   const services = {};
@@ -61,8 +60,7 @@ export function validateConfig(input) {
   for (const side of ['localPort', 'remotePort']) {
     if (new Set(forwards.map(service => service[side])).size !== forwards.length) throw new Error('Duplicate service port.');
   }
-  if (input.address !== undefined && !hostname.test(input.address)) throw new Error('address must be a hostname or IP.');
-  return { version: 1, host: input.host, ...(input.address ? { address: input.address } : {}), services };
+  return { version: 1, host: input.host, services };
 }
 
 export function defaultConfig(host, macAddress) {
@@ -76,29 +74,17 @@ export function defaultConfig(host, macAddress) {
   });
 }
 
-export const hostArgs = config => (config.address ? ['-o', `HostName=${config.address}`] : []);
 
 // launchd restarts ssh on exit; ServerAlive and ExitOnForwardFailure make it
 // exit on a dead link or a taken port, so no supervisor process is needed.
-export function sshArgs(config, sshConfig) {
-  const args = ['-N', '-T', '-F', sshConfig, '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+export function sshArgs(config) {
+  const args = ['-N', '-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
     '-o', 'GatewayPorts=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
     '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3'];
   const { app, browser } = config.services;
   if (app) args.push('-L', `127.0.0.1:${app.localPort}:127.0.0.1:${app.remotePort}`);
   if (browser) args.push('-R', `127.0.0.1:${browser.remotePort}:127.0.0.1:${browser.localPort}`);
   return [...args, config.host];
-}
-
-// Resolve the user's alias once, keeping connection/authentication options but
-// dropping inherited forwards and multiplexing that could duplicate listeners.
-export function connectionConfig(resolved, home = homedir()) {
-  const excluded = new Set(['host', 'localforward', 'remoteforward', 'dynamicforward', 'clearallforwardings',
-    'controlmaster', 'controlpath', 'controlpersist', 'remotecommand', 'localcommand', 'permitlocalcommand']);
-  const host = resolved.split('\n').find(line => line.startsWith('host '))?.slice(5);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(host ?? '')) throw new Error('ssh -G did not resolve a valid host alias.');
-  const lines = resolved.trim().split('\n').filter(line => !excluded.has(line.split(' ')[0].toLowerCase()));
-  return `Host ${host}\n${lines.map(line => `  ${line}`).join('\n')}\nHost !${host} *\n  Include ${JSON.stringify(path.join(home, '.ssh/config'))}\n`;
 }
 
 export const plist = (name, args, log) => `<?xml version="1.0" encoding="UTF-8"?>

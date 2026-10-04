@@ -21,15 +21,14 @@ is down.
 ## Setup
 
 Requirements: Tailscale on both machines (WSL in mirrored networking mode sees
-the Windows client), Node 22.12+, an SSH alias from the Mac to WSL with
-unattended key auth, `curl` and `ss` on WSL, and Unison 2.52+ on both
+the Windows client), Node 22.12+, unattended SSH key auth from the Mac to WSL's
+Tailscale name, `curl` and `ss` on WSL, and Unison 2.52+ on both
 (`brew install unison`) for `skills-sync`.
 
 ```sh
 # Mac
 npm ci --ignore-scripts && npm link --ignore-scripts
-remote-access init --host WSL_ALIAS --address WSL.TAILNET.ts.net --mac-address MAC.TAILNET.ts.net
-# writes ~/Library/Application Support/remote-access/config.json; address overrides the alias's HostName
+remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net   # writes the Mac config
 remote-access install                             # rerun after updating this checkout or Node
 # WSL
 npm link --ignore-scripts
@@ -39,7 +38,7 @@ export BROWSER="$HOME/.local/bin/remote-access-browser"   # persist in your shel
 
 `install` snapshots its runtime into application data, so moving the checkout
 does not break autostart. With `macLogin` it creates a key on WSL, authorizes
-only that key on the Mac (from loopback or the Tailscale range, no forwarding)
+only that key on the Mac (from the Tailscale range only, no forwarding)
 and pins the Mac host key. Reinstalling restarts the browser service, so the next browser tool call
 asks for approval in Helium again.
 
