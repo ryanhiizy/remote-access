@@ -60,7 +60,7 @@ export async function openOnMac(value, { directory = path.join(homedir(), '.conf
   }
   await new Promise((resolve, reject) => {
     const script = target.url ? macOpenScript(target.url) : macFileScript(path.basename(target.file));
-    const child = execute('/usr/bin/ssh', ['-T', '-F', sshConfig, 'mac-remote', target.url ? '/bin/sh -s' : `/bin/sh -c ${quote(script)}`],
+    const child = execute('/usr/bin/ssh', ['-T', '-F', sshConfig, config.services.macLogin.address, target.url ? '/bin/sh -s' : `/bin/sh -c ${quote(script)}`],
       { stdio: ['pipe', target.url ? 'ignore' : 'pipe', 'ignore'] });
     const archive = target.file
       ? execute('tar', ['-ch', '-f', '-', '-C', path.dirname(target.file), path.basename(target.file)], { stdio: ['ignore', 'pipe', 'ignore'] })

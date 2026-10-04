@@ -43,7 +43,7 @@ export function probeScript(config) {
 case "$code" in [1-5][0-9][0-9]) echo 'app ready';; *) echo 'app unavailable';; esac`,
     browser && `state=$(curl -s --max-time 3 http://127.0.0.1:${browser.remotePort}/status | sed -n 's/.*"state":"\\([a-z-]*\\)".*/\\1/p')
 echo "browser \${state:-unavailable}"`,
-    macLogin && `if timeout 8 ssh -F "$HOME/.config/remote-access/mac-ssh.conf" mac-remote uname -s 2>/dev/null | grep -qx Darwin; then echo 'macLogin ready'; else echo 'macLogin unavailable'; fi`,
+    macLogin && `if timeout 8 ssh -F "$HOME/.config/remote-access/mac-ssh.conf" ${shellQuote(macLogin.address)} uname -s 2>/dev/null | grep -qx Darwin; then echo 'macLogin ready'; else echo 'macLogin unavailable'; fi`,
   ].filter(Boolean).join('\n');
 }
 
@@ -79,10 +79,10 @@ cat "$key.pub"
   const authorized = path.join(home, '.ssh/authorized_keys');
   const lines = (existsSync(authorized) ? readFileSync(authorized, 'utf8') : '').split('\n').filter(line => line && !line.includes(key));
   privateWrite(authorized, `${[...lines, `from="100.64.0.0/10",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ${key} remote-access-mac`].join('\n')}\n`);
-  const macConfig = `Host mac-remote\n  HostName ${service.address}\n  User ${service.user}\n  IdentityFile ~/.config/remote-access/mac_ed25519\n  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n  HostKeyAlias remote-access-mac\n  UserKnownHostsFile ~/.config/remote-access/mac_known_hosts\n  ConnectTimeout 5\n`;
+  const macConfig = `Host ${service.address}\n  HostName ${service.address}\n  User ${service.user}\n  IdentityFile ~/.config/remote-access/mac_ed25519\n  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n  UserKnownHostsFile ~/.config/remote-access/mac_known_hosts\n  ConnectTimeout 5\n`;
   ssh(config, `set -eu; umask 077; cd "$HOME/.config/remote-access"
 printf %s ${shellQuote(macConfig)} > mac-ssh.conf
-printf '%s\\n' ${shellQuote(`remote-access-mac ${hostKey}`)} > mac_known_hosts
+printf '%s\\n' ${shellQuote(`${service.address} ${hostKey}`)} > mac_known_hosts
 `);
 }
 

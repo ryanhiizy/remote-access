@@ -47,11 +47,14 @@ asks for approval in Helium again.
 ```sh
 remote-access status [--json]          # nonzero when something is unavailable
 remote-access mac -- COMMAND           # or no command for a shell
-scp -F ~/.config/remote-access/mac-ssh.conf FILE mac-remote:PATH
+scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC_TAILSCALE_NAME:PATH
 remote-access open URL_OR_PATH         # same as xdg-open
 printf hi | pbcopy; pbpaste            # Mac clipboard
 remote-access skills-sync [--prefer mac|wsl]
 ```
+
+The configured Mac Tailscale name is also its SSH host entry. The CLI, clipboard,
+file opening and skills sync all use that name; no separate Mac alias is created.
 
 - **Browser control:** MCP clients run `node ~/.config/remote-access/browser-client.mjs 9223`
   on WSL, or `.../runtime/browser-client.mjs 19222` on the Mac, as a persistent
