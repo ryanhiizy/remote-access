@@ -53,13 +53,15 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
       if (bad) process.exitCode = 1;
       return;
     }
-    case 'mac':
+    case 'mac': {
       only(false, command);
       if (rest[0] === '--') rest.shift();
-      readConfig();
+      const address = readConfig().services.macLogin?.address;
+      if (!address) throw new Error('Enable macLogin and install remote-access on your Mac first.');
       // Pass the remote exit status through unchanged.
-      process.exitCode = spawnSync('/usr/bin/ssh', ['-F', paths.sshConfig, 'mac-remote', ...rest.map(shellQuote)], { stdio: 'inherit' }).status ?? 1;
+      process.exitCode = spawnSync('/usr/bin/ssh', ['-F', paths.sshConfig, address, ...rest.map(shellQuote)], { stdio: 'inherit' }).status ?? 1;
       return;
+    }
     case 'open':
       only(false, command);
       if (rest[0] === '--') rest.shift();
