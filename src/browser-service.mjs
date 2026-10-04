@@ -1,9 +1,13 @@
+// Shares one approved Helium DevTools connection with every MCP client.
+// Run by launchd: node browser-service.mjs PORT PROFILE TOKEN_FILE
 import 'chrome-devtools-mcp/build/src/utils/polyfill.js';
 import { BrowserManager } from 'chrome-devtools-mcp/build/src/BrowserManager.js';
 import { McpServer } from 'chrome-devtools-mcp';
 import { parseArguments } from 'chrome-devtools-mcp/build/src/config/mcp-options.js';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { readEndpoint } from './config.mjs';
 
 const maxMessageBytes = 8 * 1024 * 1024;
@@ -13,7 +17,6 @@ const maxMessageBytes = 8 * 1024 * 1024;
 export class SocketTransport {
   constructor(socket, initial = '') { this.socket = socket; this.buffer = initial; }
   async start() {
-    this.socket.setEncoding('utf8');
     this.socket.on('data', data => { this.buffer += data; this.read(); });
     this.socket.on('error', error => this.onerror?.(error));
     this.socket.on('close', () => this.onclose?.());
@@ -25,16 +28,13 @@ export class SocketTransport {
     while ((end = this.buffer.indexOf('\n')) !== -1) {
       const line = this.buffer.slice(0, end);
       this.buffer = this.buffer.slice(end + 1);
-      if (Buffer.byteLength(line) > maxMessageBytes) { this.socket.destroy(); return; }
       try { this.onmessage?.(JSON.parse(line)); }
       catch (error) { this.onerror?.(error); this.socket.destroy(); return; }
     }
     if (Buffer.byteLength(this.buffer) > maxMessageBytes) this.socket.destroy();
   }
   send(message) {
-    return new Promise((resolve, reject) => {
-      this.socket.write(`${JSON.stringify(message)}\n`, error => error ? reject(error) : resolve());
-    });
+    return new Promise((resolve, reject) => this.socket.write(`${JSON.stringify(message)}\n`, error => error ? reject(error) : resolve()));
   }
   async close() { this.socket.destroy(); }
 }
@@ -43,23 +43,19 @@ export function sharedBrowserManager(manager, endpoint) {
   let browser;
   let pending = 0;
   let connectionId = null;
-  let connections = 0;
   return {
     async ensureBrowser() {
       pending++;
       try {
         const current = await manager.ensureBrowser();
-        if (current !== browser) { browser = current; connectionId = randomUUID(); connections++; }
+        if (current !== browser) { browser = current; connectionId = randomUUID(); }
         return current;
       } finally { pending--; }
     },
     // McpServer.close() invokes this on every client disconnect.
     async close() {},
     status() {
-      return {
-        state: browser?.connected ? 'ready' : pending ? 'waiting-for-approval' : endpoint() ? 'available' : 'unavailable',
-        connectionId, connections,
-      };
+      return { state: browser?.connected ? 'ready' : pending ? 'waiting-for-approval' : endpoint() ? 'available' : 'unavailable', connectionId };
     },
   };
 }
@@ -71,13 +67,10 @@ export function sharedBrowserService(profile, token) {
   const manager = new BrowserManager(args, {});
   const shared = sharedBrowserManager(manager, () => readEndpoint(profile));
   const sessions = new Set();
-  const sockets = new Set();
-  let stopping = false;
+  const expected = Buffer.from(token);
   const server = createServer(socket => {
-    sockets.add(socket);
     socket.setEncoding('utf8');
     socket.on('error', () => {});
-    socket.once('close', () => sockets.delete(socket));
     const timeout = setTimeout(() => socket.destroy(), 10000);
     let initial = '';
     const first = async data => {
@@ -88,43 +81,37 @@ export function sharedBrowserService(profile, token) {
       clearTimeout(timeout);
       socket.removeListener('data', first);
       socket.pause();
+      // Passive status for curl; never touches the browser connection.
+      if (initial.startsWith('GET /status ')) {
+        const body = JSON.stringify({ ...shared.status(), clients: sessions.size });
+        socket.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+        return;
+      }
       try {
         const request = JSON.parse(initial.slice(0, end));
-        if (request.method === 'remote-access/status') {
-          socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { ...shared.status(), clients: sessions.size } })}\n`);
-          return;
-        }
-        if (request.method !== 'initialize' || stopping) { socket.destroy(); return; }
         const supplied = Buffer.from(typeof request.remoteAccessToken === 'string' ? request.remoteAccessToken : '');
-        const expected = Buffer.from(token);
-        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-          socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32001, message: 'Shared browser client is not authorized.' } })}\n`);
+        if (request.method !== 'initialize' || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+          socket.end(`${JSON.stringify({ jsonrpc: '2.0', id: request.id ?? null, error: { code: -32001, message: 'Shared browser client is not authorized.' } })}\n`);
           return;
         }
-        // The secret authenticates this transport, not the MCP/browser protocol.
+        // The token authenticates this transport, not the MCP/browser protocol.
         delete request.remoteAccessToken;
         initial = `${JSON.stringify(request)}\n${initial.slice(end + 1)}`;
         const mcp = await McpServer.from(args, { browserManager: shared });
-        if (socket.destroyed || stopping) { await mcp.close(); return; }
+        if (socket.destroyed) { await mcp.close(); return; }
         sessions.add(mcp);
-        socket.once('close', () => {
-          sessions.delete(mcp);
-          void mcp.close().catch(error => console.error(error.message));
-        });
+        socket.once('close', () => { sessions.delete(mcp); void mcp.close().catch(error => console.error(error.message)); });
         await mcp.connect(new SocketTransport(socket, initial));
       } catch (error) { console.error(error.message); socket.destroy(); }
     };
     socket.on('data', first);
-    socket.once('close', () => clearTimeout(timeout));
   });
-  return {
-    server,
-    async close() {
-      stopping = true;
-      for (const socket of sockets) socket.destroy();
-      await Promise.allSettled([...sessions].map(mcp => mcp.close()));
-      await manager.close();
-      await new Promise(resolve => server.close(resolve));
-    },
-  };
+  return { server, close: () => manager.close() };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const [port, profile, tokenFile] = process.argv.slice(2);
+  const service = sharedBrowserService(profile, readFileSync(tokenFile, 'utf8').trim());
+  service.server.listen(Number(port), '127.0.0.1');
+  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => service.close().finally(() => process.exit(0)));
 }
