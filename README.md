@@ -159,32 +159,51 @@ Browser tools and screenshots now run on the Mac. File-writing tools use the
 Mac filesystem and negotiated MCP roots, not WSL paths. Transfer needed files
 with the Mac SSH connection.
 
-### Open web links from remote Linux
+### Coding agents
 
-Browser control and opening web links are separate entry points. To open a URL
-in your existing Mac Helium session from WSL (requires `macLogin`):
+Codex and Claude Code both reach Helium through the Executor `helium_mac`
+integration; neither needs a separate browser MCP server. Claude Desktop
+remote (SSH) sessions start the `executor` MCP server from the Mac's
+`claude_desktop_config.json` on WSL, so `executor` must be on the WSL PATH.
+Ask the agent to use `helium_mac` when you want your signed-in profile rather
+than an isolated test browser.
+
+Claude in Chrome can also control Helium. It connects through Anthropic's
+account bridge rather than this tunnel: install the extension in Helium,
+open it once, sign in and accept the Claude Desktop pairing prompt.
+
+### Open links and files, and share the clipboard
+
+These helpers require `macLogin`. Install them on WSL:
 
 ```sh
-remote-access open 'https://example.com/'
-remote-access browser-install
+remote-access install-helpers
 export BROWSER="$HOME/.local/bin/remote-access-browser"
+remote-access open 'https://example.com/'
+remote-access open ./report.pdf
+printf 'copied on WSL' | pbcopy && pbpaste
 ```
 
-`browser-install` snapshots the dependency-free opener into the WSL application
-data directory and installs per-user `xdg-open`, `sensible-browser` and
-`www-browser` helpers. Keep `~/.local/bin` before system directories on PATH;
-persist `BROWSER` in your shell environment and service environment for clients
-that use it. The helpers use Mac SSH to ask the running Helium app to open the
-URL. These are ordinary user-owned tabs, independent of an MCP client exiting.
-Browser automation keeps using the approved shared browser manager. The opener
-does not launch a browser if Helium is closed. Installation saves files in private
-backups. Non-web `xdg-open` arguments continue to the system helper.
+`install-helpers` snapshots the dependency-free opener into the WSL application
+data directory and installs per-user `xdg-open`, `sensible-browser`,
+`www-browser`, `pbcopy` and `pbpaste` helpers. Keep `~/.local/bin` before
+system directories on PATH; persist `BROWSER` in your shell environment and
+service environment for clients that use it. Installation saves replaced files
+in private backups.
 
-The opener confirms the Mac URL-open command before returning success. This
-confirms dispatch, not page loading or authentication. A missing tunnel, closed
-Helium or failed Mac command returns a nonzero exit status.
-It does not print URLs, which can contain login codes, and does not replay an
-uncertain navigation automatically. It accepts HTTP/HTTPS URLs only.
+Web URLs open as ordinary tabs in the running Helium app, independent of an MCP
+client exiting. Browser automation keeps using the approved shared browser
+manager. The opener does not launch a browser if Helium is closed. It confirms
+dispatch, not page loading or authentication, and returns a nonzero status for a
+missing tunnel, closed Helium or failed Mac command. It does not print URLs,
+which can contain login codes, and does not replay an uncertain navigation.
+
+Files and folders (paths or `file://` URLs) are copied to `~/Downloads/WSL` on
+the Mac and opened with their default app; an existing copy is kept and the new
+one gets a numbered name. Edits on the Mac do not flow back to WSL. `xdg-open`
+sends web URLs, file URLs and existing paths to the Mac; other arguments continue
+to the system helper. `pbcopy` and `pbpaste` read and write the Mac clipboard as
+UTF-8 text.
 
 Addresses are resolved by the Mac browser. The configured app tunnel makes
 WSL port 8080 reachable at Mac `http://localhost:8080`; other WSL localhost
@@ -194,6 +213,30 @@ Mac. Use that provider's remote login/code flow in an interactive terminal,
 keep its process alive until credentials are saved, and verify authentication
 on WSL afterward. Do not run interactive login processes from session hooks
 with disconnected input.
+
+## Agent skills
+
+Shared agent skills live in `~/.agents/skills` (including `npx skills`
+installs). Claude Code and Codex do not read that directory at user level, so
+`~/.claude/skills` and `~/.codex/skills` link to every shared skill and keep
+only their own agent-specific skills. Built-in sets (`~/.codex/skills/.system`,
+`~/.claude/skills/synced`) are left to their apps.
+
+`skills-sync` makes these directories and `~/.agents/.skill-lock.json`
+identical on WSL and the Mac. It runs only when you invoke it:
+
+```sh
+remote-access skills-sync --dry-run
+remote-access skills-sync
+```
+
+Run it on WSL. Each skill directory or file is compared with the state recorded
+after the previous sync: a change on one side is copied to the other, including
+deletions, with home-directory paths rewritten between `/Users/...` and
+`/home/...`. A skill changed on both sides is reported as a conflict and left
+alone until you rerun with `--prefer mac` or `--prefer wsl`. Replaced items are
+moved to the backups directory on each machine. Afterwards both machines
+relink shared skills into each agent directory and remove dangling links.
 
 ## Status, upgrades and removal
 
