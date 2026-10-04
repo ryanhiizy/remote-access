@@ -90,15 +90,29 @@ printf '%s\\n' ${shellQuote(`remote-access-mac ${hostKey}`)} > mac_known_hosts
 const domain = () => `gui/${process.getuid()}`;
 const plists = paths => [label, browserLabel].map(name => path.join(paths.agents, `${name}.plist`));
 
-export function stop(home = homedir()) {
+const loaded = name => { try { run('/bin/launchctl', ['print', `${domain()}/${name}`]); return true; } catch { return false; } };
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// bootout returns before launchd finishes unloading; wait so a following bootstrap does not fail.
+export async function stop(home = homedir()) {
   for (const name of [label, browserLabel]) {
-    try { run('/bin/launchctl', ['bootout', `${domain()}/${name}`]); } catch { /* not loaded */ }
+    if (!loaded(name)) continue;
+    run('/bin/launchctl', ['bootout', `${domain()}/${name}`]);
+    for (let attempt = 0; attempt < 40 && loaded(name); attempt++) await pause(250);
   }
   return locations(home, 'darwin');
 }
 
-export function start(home = homedir()) {
-  for (const file of plists(locations(home, 'darwin'))) if (existsSync(file)) run('/bin/launchctl', ['bootstrap', domain(), file]);
+// launchd can still answer "Bootstrap failed: 5" briefly after an unload.
+export async function start(home = homedir()) {
+  const paths = locations(home, 'darwin');
+  for (const [name, file] of [label, browserLabel].map((name, index) => [name, plists(paths)[index]])) {
+    if (!existsSync(file) || loaded(name)) continue;
+    for (let attempt = 0; ; attempt++) {
+      try { run('/bin/launchctl', ['bootstrap', domain(), file]); break; }
+      catch (error) { if (attempt >= 10 || !error.message.includes(': 5:')) throw error; await pause(500); }
+    }
+  }
 }
 
 export async function install(input, home = homedir()) {
@@ -112,7 +126,7 @@ export async function install(input, home = homedir()) {
     throw new Error('Enable Mac Remote Login in System Settings → General → Sharing, then retry.');
   }
   provisionMacLogin(config, home);
-  stop(home);
+  await stop(home);
 
   privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
   const sshConfig = path.join(paths.directory, 'tunnel-ssh.conf');
@@ -142,13 +156,13 @@ export async function install(input, home = homedir()) {
     privateWrite(browserPlist, plist(browserLabel, [process.execPath, path.join(runtime, 'browser-service.mjs'), String(localPort), profile, tokenFile],
       path.join(paths.directory, 'browser.log')), 0o644);
   } else rmSync(browserPlist, { force: true });
-  start(home);
+  await start(home);
 
   // Ready when every forward listens, and reverse forwards stay loopback-only on WSL.
   const remote = ['browser', 'macLogin'].filter(name => config.services[name]).map(name => config.services[name].remotePort);
   let ready = false;
   for (let attempt = 0; attempt < 40 && !ready; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await pause(500);
     const local = await Promise.all(['app', 'browser'].filter(name => config.services[name]).map(name => tcpReady(config.services[name].localPort)));
     if (agentState(label) !== 'running' || !local.every(Boolean)) continue;
     const listeners = ssh(config, 'ss -ltnH\n').split('\n').map(line => line.trim().split(/\s+/)[3]).filter(Boolean);
@@ -169,7 +183,7 @@ printf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > browser-token` : ''}
   return report;
 }
 
-export function uninstall(home = homedir()) {
-  stop(home);
+export async function uninstall(home = homedir()) {
+  await stop(home);
   for (const file of plists(locations(home, 'darwin'))) rmSync(file, { force: true });
 }

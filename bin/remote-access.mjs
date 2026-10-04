@@ -33,8 +33,8 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
     }
     case 'install': only(true, command); return console.log(JSON.stringify(await install(readConfig()), null, 2));
     case 'start': only(true, command); return start();
-    case 'stop': only(true, command); return void stop();
-    case 'restart': only(true, command); stop(); return start();
+    case 'stop': only(true, command); return void await stop();
+    case 'restart': only(true, command); await stop(); return start();
     case 'uninstall': only(true, command); return uninstall();
     case 'logs':
       only(true, command);
