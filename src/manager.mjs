@@ -1,359 +1,175 @@
 import { spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connectionConfig, label, locations, shellQuote, tunnelPlist, validateConfig } from './config.mjs';
+import { browserLabel, connectionConfig, label, locations, plist, shellQuote, sshArgs, validateConfig } from './config.mjs';
 
 export function run(program, args, options = {}) {
   const result = spawnSync(program, args, { encoding: 'utf8', timeout: 30000, ...options });
   if (result.error || result.status !== 0) {
-    throw new Error(`${path.basename(program)} failed: ${result.error?.message ?? result.stderr?.trim() ?? result.status}`);
+    throw new Error(`${path.basename(program)} failed: ${result.error?.message ?? (result.stderr?.trim() || result.status)}`);
   }
   return result.stdout;
 }
 
-export function privateWrite(file, text) {
+export function privateWrite(file, text, mode = 0o600) {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600, flag: 'wx' });
+  writeFileSync(temporary, text, { mode });
   renameSync(temporary, file);
-  chmodSync(file, 0o600);
+  chmodSync(file, mode);
 }
 
-export function inventory(home = homedir(), execute = run) {
-  const directory = path.join(home, 'Library/LaunchAgents');
-  if (!existsSync(directory)) return [];
-  return readdirSync(directory).filter(file => file.endsWith('.plist')).flatMap(file => {
-    try {
-      const plist = JSON.parse(execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(directory, file)]));
-      const args = plist.ProgramArguments ?? [plist.Program];
-      if (!/ssh|executor|tunnel|remote|wsl|helium/i.test(`${plist.Label} ${args.join(' ')}`)) return [];
-      return [{ label: plist.Label, file: path.join(directory, file), arguments: args }];
-    } catch {
-      return [{ file: path.join(directory, file), error: 'Could not parse this LaunchAgent.' }];
-    }
-  });
-}
+// Direct SSH to WSL (not through the tunnel), for setup and status.
+const ssh = (config, script) => run('/usr/bin/ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no',
+  '-o', 'ControlPath=none', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10', config.host, '/bin/sh -s'], { input: script });
 
-function ssh(config, script, execute = run) {
-  return execute('/usr/bin/ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no',
-    '-o', 'ControlPath=none', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
-    config.host, '/bin/sh -s'], { input: script });
-}
-
-export const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
+const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
-  let settled = false;
-  const finish = ready => { if (!settled) { settled = true; socket.destroy(); resolve(ready); } };
+  const finish = ready => { socket.destroy(); resolve(ready); };
   socket.setTimeout(timeout, () => finish(false));
   socket.once('connect', () => finish(true));
   socket.once('error', () => finish(false));
 });
 
-export function browserStatus(port) {
-  return new Promise((resolve, reject) => {
-    const socket = createConnection({ host: '127.0.0.1', port });
-    let buffer = '';
-    let settled = false;
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true; socket.destroy();
-      if (error) reject(error); else resolve(result);
-    };
-    socket.setEncoding('utf8');
-    socket.setTimeout(3000, () => finish(new Error('Browser status timed out.')));
-    socket.on('connect', () => socket.write('{"jsonrpc":"2.0","id":1,"method":"remote-access/status"}\n'));
-    socket.on('data', data => {
-      buffer += data;
-      if (buffer.length > 16384) { finish(new Error('Invalid browser status.')); return; }
-      if (!buffer.includes('\n')) return;
-      try { finish(null, JSON.parse(buffer.split('\n')[0]).result); }
-      catch (error) { finish(error); }
-    });
-    socket.on('error', error => finish(error));
-    socket.on('end', () => finish(new Error('Browser service closed without status.')));
-  });
-}
-
+// Runs on WSL, so every check crosses the tunnel the way agents use it.
 export function probeScript(config) {
-  const lines = ['set -u'];
-  for (const [name, service] of Object.entries(config.services)) {
-    if (name === 'macLogin') {
-      lines.push(`if timeout 8 ssh -F "$HOME/.config/remote-access/mac-ssh.conf" mac-remote uname -s 2>/dev/null | grep -qx Darwin; then echo 'macLogin ready'; else echo 'macLogin unavailable'; fi`);
-    } else {
-      const suffix = '/';
-      if (name === 'browser') {
-        const probe = readFileSync(fileURLToPath(new URL('./browser-probe.py', import.meta.url)), 'utf8');
-        lines.push(`python3 -c ${shellQuote(probe)} ${service.remotePort}${service.shared ? ' shared' : ''}`);
-        continue;
-      }
-      lines.push(`code=$(curl --max-time 3 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${service.remotePort}${suffix} 2>/dev/null || true)`);
-      lines.push(`case "$code" in [1-5][0-9][0-9]) echo '${name} ready';; *) echo '${name} unavailable';; esac`);
-    }
-  }
-  return `${lines.join('\n')}\n`;
+  const { app, browser, macLogin } = config.services;
+  return [
+    app && `code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${app.remotePort}/ || true)
+case "$code" in [1-5][0-9][0-9]) echo 'app ready';; *) echo 'app unavailable';; esac`,
+    browser && `state=$(curl -s --max-time 3 http://127.0.0.1:${browser.remotePort}/status | sed -n 's/.*"state":"\\([a-z-]*\\)".*/\\1/p')
+echo "browser \${state:-unavailable}"`,
+    macLogin && `if timeout 8 ssh -F "$HOME/.config/remote-access/mac-ssh.conf" mac-remote uname -s 2>/dev/null | grep -qx Darwin; then echo 'macLogin ready'; else echo 'macLogin unavailable'; fi`,
+  ].filter(Boolean).join('\n');
 }
 
-export async function status(config, { platform = process.platform, home = homedir(), execute = run } = {}) {
-  const paths = locations(home, platform);
-  const result = { host: config.host, side: platform === 'darwin' ? 'mac' : 'wsl', services: {}, log: paths.log };
-  if (platform === 'darwin') {
-    try {
-      const state = execute('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`]);
-      result.tunnel = /state = running/.test(state) ? 'running' : 'waiting to reconnect';
-    } catch { result.tunnel = 'not loaded'; }
-    if (result.tunnel === 'running') {
-      try {
-        const worker = JSON.parse(readFileSync(path.join(paths.directory, 'state.json'), 'utf8'));
-        const loaded = execute('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`]);
-        const pid = Number(loaded.match(/\bpid = (\d+)/)?.[1]);
-        if (worker.pid !== pid) result.tunnel = 'starting';
-        else if (worker.state !== 'connected') result.tunnel = worker.state;
-      } catch { result.tunnel = 'starting'; }
-    }
-    for (const name of ['app', 'executor']) {
-      if (!config.services[name]) continue;
-      const service = config.services[name];
-      // An HTTP response checks traffic through the tunnel, not just an open listener.
-      try {
-        const code = execute('/usr/bin/curl', ['--max-time', '3', '-s', '-o', '/dev/null', '-w', '%{http_code}', `http://127.0.0.1:${service.localPort}/`]);
-        result.services[name] = /^[1-5][0-9]{2}$/.test(code) ? 'ready' : 'unavailable';
-      } catch { result.services[name] = 'unavailable'; }
-    }
-  }
+const agentState = name => {
+  try { return /state = running/.test(run('/bin/launchctl', ['print', `gui/${process.getuid()}/${name}`])) ? 'running' : 'restarting'; }
+  catch { return 'not loaded'; }
+};
+
+export function status(config, platform = process.platform) {
+  const result = { side: platform === 'darwin' ? 'mac' : 'wsl', host: config.host, services: {} };
+  if (platform === 'darwin') result.agents = { tunnel: agentState(label), browser: config.services.browser ? agentState(browserLabel) : undefined };
   try {
-    const output = platform === 'darwin' ? ssh(config, probeScript(config), execute)
-      : execute('/bin/sh', ['-s'], { input: probeScript(config) });
-    for (const line of output.trim().split('\n')) {
-      const [name, state] = line.split(' ');
-      if (name in config.services && (platform !== 'darwin' || !['app', 'executor'].includes(name))) result.services[name] = state;
-    }
-  } catch (error) { result.remoteError = error.message; }
+    const output = platform === 'darwin' ? ssh(config, probeScript(config)) : run('/bin/sh', ['-s'], { input: probeScript(config) });
+    for (const line of output.trim().split('\n')) { const [name, state] = line.split(' '); result.services[name] = state; }
+  } catch (error) { result.error = error.message; }
   for (const name of Object.keys(config.services)) result.services[name] ??= 'unavailable';
-  if (platform === 'darwin' && config.services.browser?.shared) {
-    try {
-      result.browser = await browserStatus(config.services.browser.localPort);
-    } catch { /* Service state is already reported by the passive remote probe. */ }
-  }
   return result;
 }
 
-function provisionMacLogin(config, home, execute) {
+function provisionMacLogin(config, home) {
   const service = config.services.macLogin;
   if (!service) return;
-  // The private key lives only on WSL. Pin the Mac's local SSH host key before
-  // connecting through the reverse forward, rather than accepting it blindly.
+  // The private key lives only on WSL. Pin the Mac's host key rather than trusting on first use.
   const hostKey = readFileSync('/etc/ssh/ssh_host_ed25519_key.pub', 'utf8').trim().split(/\s+/).slice(0, 2).join(' ');
-  if (!/^ssh-ed25519 [A-Za-z0-9+/=]+$/.test(hostKey)) throw new Error('Cannot read the Mac SSH host public key. Enable Remote Login first.');
   const key = ssh(config, `set -eu
-umask 077
-mkdir -p "$HOME/.config/remote-access"
-chmod 700 "$HOME/.config/remote-access"
+umask 077; mkdir -p "$HOME/.config/remote-access"
 key="$HOME/.config/remote-access/mac_ed25519"
-if [ ! -f "$key" ]; then ssh-keygen -q -t ed25519 -N '' -C remote-access-mac -f "$key"; fi
+[ -f "$key" ] || ssh-keygen -q -t ed25519 -N '' -C remote-access-mac -f "$key"
 cat "$key.pub"
-`, execute).trim();
-  if (!/^ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]*)?$/.test(key)) throw new Error('WSL returned an invalid SSH public key.');
-  const publicKey = key.split(/\s+/).slice(0, 2).join(' ');
+`).trim().split(/\s+/).slice(0, 2).join(' ');
+  if (!/^ssh-ed25519 [A-Za-z0-9+/=]+$/.test(key)) throw new Error('WSL returned an invalid SSH public key.');
   const authorized = path.join(home, '.ssh/authorized_keys');
   const current = existsSync(authorized) ? readFileSync(authorized, 'utf8') : '';
-  if (!current.split('\n').some(line => line.includes(publicKey))) {
-    privateWrite(authorized, `${current}${current && !current.endsWith('\n') ? '\n' : ''}from="127.0.0.1,::1",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ${publicKey} remote-access-mac\n`);
+  if (!current.includes(key)) {
+    privateWrite(authorized, `${current}${current && !current.endsWith('\n') ? '\n' : ''}from="127.0.0.1,::1",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ${key} remote-access-mac\n`);
   }
   const macConfig = `Host mac-remote\n  HostName 127.0.0.1\n  Port ${service.remotePort}\n  User ${service.user}\n  IdentityFile ~/.config/remote-access/mac_ed25519\n  IdentitiesOnly yes\n  BatchMode yes\n  StrictHostKeyChecking yes\n  HostKeyAlias remote-access-mac\n  UserKnownHostsFile ~/.config/remote-access/mac_known_hosts\n  ConnectTimeout 5\n`;
-  ssh(config, `set -eu
-umask 077
-directory="$HOME/.config/remote-access"
-printf %s ${shellQuote(macConfig)} > "$directory/mac-ssh.conf"
-printf '%s\\n' ${shellQuote(`remote-access-mac ${hostKey}`)} > "$directory/mac_known_hosts"
-chmod 600 "$directory/mac-ssh.conf" "$directory/mac_known_hosts"
-`, execute);
+  ssh(config, `set -eu; umask 077; cd "$HOME/.config/remote-access"
+printf %s ${shellQuote(macConfig)} > mac-ssh.conf
+printf '%s\\n' ${shellQuote(`remote-access-mac ${hostKey}`)} > mac_known_hosts
+`);
 }
 
-export async function install(input, { platform = process.platform, home = homedir(), execute = run, ready = tcpReady, pause = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
-  if (platform !== 'darwin') throw new Error('Install the connection service on your Mac. WSL uses status and mac commands.');
+const domain = () => `gui/${process.getuid()}`;
+const plists = paths => [label, browserLabel].map(name => path.join(paths.agents, `${name}.plist`));
+
+export function stop(home = homedir()) {
+  for (const name of [label, browserLabel]) {
+    try { run('/bin/launchctl', ['bootout', `${domain()}/${name}`]); } catch { /* not loaded */ }
+  }
+  return locations(home, 'darwin');
+}
+
+export function start(home = homedir()) {
+  for (const file of plists(locations(home, 'darwin'))) if (existsSync(file)) run('/bin/launchctl', ['bootstrap', domain(), file]);
+}
+
+export async function install(input, home = homedir()) {
+  if (process.platform !== 'darwin') throw new Error('Install on your Mac. WSL uses status, mac, open, install-helpers and skills-sync.');
   const config = validateConfig(input);
-  const paths = locations(home, platform);
-  const domain = `gui/${process.getuid()}`;
-  const resolved = execute('/usr/bin/ssh', ['-G', config.host]);
-  ssh(config, 'true\n', execute);
-  if (config.services.macLogin && !(await ready(config.services.macLogin.localPort))) {
-    throw new Error('Enable Mac Remote Login in System Settings → General → Sharing, restricted to your account, then retry.');
+  const paths = locations(home, 'darwin');
+  const runtime = path.join(paths.directory, 'runtime');
+  const resolved = run('/usr/bin/ssh', ['-G', config.host]);
+  ssh(config, 'true\n');
+  if (config.services.macLogin && !(await tcpReady(config.services.macLogin.localPort))) {
+    throw new Error('Enable Mac Remote Login in System Settings → General → Sharing, then retry.');
   }
-  const agents = inventory(home, execute);
-  const replacements = config.replaceAgents.map(agent => {
-    const item = agents.find(candidate => candidate.label === agent);
-    if (!item) throw new Error(`LaunchAgent ${agent} was not found. Run inspect before choosing replacements.`);
-    return item;
-  });
-  // Include our own previous version in rollback; retain exact files and load states.
-  if (existsSync(paths.plist)) replacements.push({ label, file: paths.plist });
-  const snapshots = replacements.map(agent => {
-    let loaded = false;
-    try { execute('/bin/launchctl', ['print', `${domain}/${agent.label}`]); loaded = true; } catch { /* not loaded */ }
-    return { ...agent, loaded, contents: readFileSync(agent.file) };
-  });
-  const previousConfig = existsSync(paths.config) ? readFileSync(paths.config) : null;
-  const sshFile = path.join(paths.directory, 'tunnel-ssh.conf');
-  const previousSsh = existsSync(sshFile) ? readFileSync(sshFile) : null;
-  const runtime = ['worker.mjs', 'config.mjs', 'browser-service.mjs', 'browser-client.mjs'].map(module => {
-    const file = path.join(paths.directory, 'runtime', module);
-    return { module, file, previous: existsSync(file) ? readFileSync(file) : null };
-  });
-  const dependency = path.join(paths.directory, 'runtime/node_modules/chrome-devtools-mcp');
-  const tokenFile = path.join(paths.directory, 'runtime/browser-token');
-  const previousToken = existsSync(tokenFile) ? readFileSync(tokenFile) : null;
-  const hadDependency = existsSync(dependency);
-  // Pinned package bundles its runtime; optional peers are not enabled here.
-  const dependencySource = config.services.browser?.shared
-    ? path.resolve(path.dirname(fileURLToPath(import.meta.resolve('chrome-devtools-mcp'))), '../..') : null;
-  const dependencyChanged = dependencySource && (!hadDependency
-    || JSON.parse(readFileSync(path.join(dependency, 'package.json'), 'utf8')).version
-      !== JSON.parse(readFileSync(path.join(dependencySource, 'package.json'), 'utf8')).version);
-  mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
-  const backup = path.join(paths.directory, 'backups', `${Date.now()}-${process.pid}`);
-  mkdirSync(backup, { recursive: true, mode: 0o700 });
-  for (const agent of snapshots) privateWrite(path.join(backup, path.basename(agent.file)), agent.contents);
-  if (previousConfig) privateWrite(path.join(backup, 'config.json'), previousConfig);
-  if (previousSsh) privateWrite(path.join(backup, 'tunnel-ssh.conf'), previousSsh);
-  for (const file of runtime) if (file.previous) privateWrite(path.join(backup, 'runtime', file.module), file.previous);
-  if (dependencyChanged && hadDependency) cpSync(dependency, path.join(backup, 'browser-package'), { recursive: true });
-  const authorized = path.join(home, '.ssh/authorized_keys');
-  const previousAuthorized = existsSync(authorized) ? readFileSync(authorized) : null;
-  const remoteBackup = `migration-${Date.now()}-${process.pid}`;
-  ssh(config, `set -eu
-umask 077
-directory="$HOME/.config/remote-access"
-backup="$directory/backups/${remoteBackup}"
-mkdir -p "$backup"
-for file in config.json mac-ssh.conf mac_known_hosts browser-client.mjs browser-token; do
-  if [ -f "$directory/$file" ]; then cp "$directory/$file" "$backup/$file"; else touch "$backup/$file.absent"; fi
-done
-`, execute);
-  const stopped = new Set();
-  let newLoaded = false;
-  try {
-    provisionMacLogin(config, home, execute);
-    for (const agent of snapshots) if (agent.loaded) {
-      execute('/bin/launchctl', ['bootout', `${domain}/${agent.label}`]);
-      stopped.add(agent.label);
-      // launchd can return before the old job has finished unloading.
-      for (let attempt = 0; attempt < 20; attempt++) {
-        try { execute('/bin/launchctl', ['print', `${domain}/${agent.label}`]); }
-        catch { break; }
-        await pause(250);
-      }
-    }
-    privateWrite(sshFile, connectionConfig(resolved, home));
-    privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
-    for (const file of runtime) {
-      privateWrite(file.file, readFileSync(fileURLToPath(new URL(`./${file.module}`, import.meta.url))));
-    }
-    if (config.services.browser?.shared && !previousToken) privateWrite(tokenFile, randomBytes(32).toString('hex'));
-    if (dependencyChanged) {
-      rmSync(dependency, { recursive: true, force: true });
-      cpSync(dependencySource, dependency, { recursive: true });
-    }
-    // Snapshot runtime files so the connection survives moving/deleting the checkout.
-    // Create logs with private permissions before launchd opens them.
-    if (!existsSync(paths.log)) privateWrite(paths.log, '');
-    privateWrite(paths.plist, tunnelPlist(config, paths));
-    execute('/usr/bin/plutil', ['-lint', paths.plist]);
-    for (let attempt = 0; ; attempt++) {
-      try { execute('/bin/launchctl', ['bootstrap', domain, paths.plist]); break; }
-      catch (error) {
-        if (attempt >= 3 || !error.message.includes('Bootstrap failed: 5:')) throw error;
-        await pause(500 * (attempt + 1));
-      }
-    }
-    newLoaded = true;
-    let running = false;
-    for (let attempt = 0; attempt < 50; attempt++) {
-      const state = execute('/bin/launchctl', ['print', `${domain}/${label}`]);
-      const listeners = await Promise.all(['app', 'executor'].filter(name => config.services[name]).map(name => ready(config.services[name].localPort)));
-      let connected = false;
-      try {
-        const worker = JSON.parse(readFileSync(path.join(paths.directory, 'state.json'), 'utf8'));
-        connected = worker.state === 'connected' && worker.pid === Number(state.match(/\bpid = (\d+)/)?.[1]);
-      } catch { /* Worker has not reported readiness yet. */ }
-      if (/state = running/.test(state) && connected && listeners.every(Boolean)) {
-        const remoteListeners = ssh(config, 'ss -ltnH\n', execute);
-        running = ['browser', 'macLogin'].filter(name => config.services[name]).every(name => {
-          const port = config.services[name].remotePort;
-          const addresses = remoteListeners.split('\n').map(line => line.trim().split(/\s+/)[3]).filter(address => address?.endsWith(`:${port}`));
-          return addresses.length === 1 && addresses[0] === `127.0.0.1:${port}`;
-        });
-        if (running) break;
-      }
-      await pause(500);
-    }
-    if (!running) throw new Error(`Tunnel did not acquire its loopback listeners. Inspect ${paths.log}.`);
-    if (config.services.macLogin) {
-      const report = ssh(config, probeScript({ ...config, services: { macLogin: config.services.macLogin } }), execute);
-      if (!report.includes('macLogin ready')) throw new Error('Mac SSH authentication failed; check Remote Login allows this Mac account.');
-    }
-    // Reinstalls use the saved configuration without already-migrated labels.
-    const installed = { ...config, replaceAgents: [] };
-    ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(`${JSON.stringify(installed, null, 2)}\n`)} > "$HOME/.config/remote-access/config.json"\nchmod 600 "$HOME/.config/remote-access/config.json"\n`, execute);
-    if (config.services.browser?.shared) {
-      const client = readFileSync(fileURLToPath(new URL('./browser-client.mjs', import.meta.url)), 'utf8');
-      ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(client)} > "$HOME/.config/remote-access/browser-client.mjs"\nchmod 600 "$HOME/.config/remote-access/browser-client.mjs"\n`, execute);
-      ssh(config, `set -eu\numask 077\nprintf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > "$HOME/.config/remote-access/browser-token"\nchmod 600 "$HOME/.config/remote-access/browser-token"\n`, execute);
-    }
-    privateWrite(paths.config, `${JSON.stringify(installed, null, 2)}\n`);
-    for (const agent of snapshots) if (agent.label !== label) rmSync(agent.file);
-    return { config: paths.config, backup, log: paths.log };
-  } catch (error) {
-    const failures = [];
-    if (newLoaded) {
-      try { execute('/bin/launchctl', ['bootout', `${domain}/${label}`]); }
-      catch (stopError) { failures.push(`New tunnel stop: ${stopError.message}`); }
-    }
-    rmSync(paths.plist, { force: true });
-    if (previousConfig) privateWrite(paths.config, previousConfig); else rmSync(paths.config, { force: true });
-    if (previousSsh) privateWrite(sshFile, previousSsh); else rmSync(sshFile, { force: true });
-    for (const file of runtime) {
-      if (file.previous) privateWrite(file.file, file.previous); else rmSync(file.file, { force: true });
-    }
-    if (!previousToken) rmSync(tokenFile, { force: true });
-    if (dependencyChanged) {
-      rmSync(dependency, { recursive: true, force: true });
-      if (hadDependency) cpSync(path.join(backup, 'browser-package'), dependency, { recursive: true });
-    }
-    if (config.services.macLogin) {
-      if (previousAuthorized) privateWrite(authorized, previousAuthorized); else rmSync(authorized, { force: true });
-    }
-    try {
-      ssh(config, `set -eu
-directory="$HOME/.config/remote-access"
-backup="$directory/backups/${remoteBackup}"
-for file in config.json mac-ssh.conf mac_known_hosts browser-client.mjs browser-token; do
-  if [ -f "$backup/$file.absent" ]; then rm -f "$directory/$file"; else cp "$backup/$file" "$directory/$file"; fi
-done
-`, execute);
-    } catch (restoreError) { failures.push(`WSL config: ${restoreError.message}`); }
-    for (const agent of snapshots) {
-      privateWrite(agent.file, agent.contents);
-      if (stopped.has(agent.label)) {
-        try { execute('/bin/launchctl', ['bootstrap', domain, agent.file]); }
-        catch (restoreError) { failures.push(`${agent.label}: ${restoreError.message}`); }
-      }
-    }
-    throw new Error(`${error.message} Previous tunnel files restored; backups: ${backup}.${failures.length ? ` Restore failures: ${failures.join('; ')}` : ''}`);
+  provisionMacLogin(config, home);
+  stop(home);
+
+  privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
+  const sshConfig = path.join(paths.directory, 'tunnel-ssh.conf');
+  privateWrite(sshConfig, connectionConfig(resolved, home));
+  // Left over from the former Node supervisor.
+  for (const stale of [path.join(runtime, 'worker.mjs'), path.join(paths.directory, 'state.json')]) rmSync(stale, { force: true });
+  for (const module of ['config.mjs', 'browser-service.mjs', 'browser-client.mjs']) {
+    privateWrite(path.join(runtime, module), readFileSync(fileURLToPath(new URL(`./${module}`, import.meta.url))));
   }
+  const tokenFile = path.join(runtime, 'browser-token');
+  if (config.services.browser) {
+    // Snapshot the pinned dependency so moving or deleting this checkout does not break autostart.
+    const source = path.resolve(path.dirname(fileURLToPath(import.meta.resolve('chrome-devtools-mcp'))), '../..');
+    const target = path.join(runtime, 'node_modules/chrome-devtools-mcp');
+    const version = file => existsSync(file) && JSON.parse(readFileSync(file, 'utf8')).version;
+    if (version(path.join(target, 'package.json')) !== version(path.join(source, 'package.json'))) {
+      rmSync(target, { recursive: true, force: true });
+      cpSync(source, target, { recursive: true });
+    }
+    if (!existsSync(tokenFile)) privateWrite(tokenFile, randomBytes(32).toString('hex'));
+  }
+
+  const [tunnelPlist, browserPlist] = plists(paths);
+  privateWrite(tunnelPlist, plist(label, ['/usr/bin/ssh', ...sshArgs(config, sshConfig)], path.join(paths.directory, 'tunnel.log')), 0o644);
+  if (config.services.browser) {
+    const { localPort, profile } = config.services.browser;
+    privateWrite(browserPlist, plist(browserLabel, [process.execPath, path.join(runtime, 'browser-service.mjs'), String(localPort), profile, tokenFile],
+      path.join(paths.directory, 'browser.log')), 0o644);
+  } else rmSync(browserPlist, { force: true });
+  start(home);
+
+  // Ready when every forward listens, and reverse forwards stay loopback-only on WSL.
+  const remote = ['browser', 'macLogin'].filter(name => config.services[name]).map(name => config.services[name].remotePort);
+  let ready = false;
+  for (let attempt = 0; attempt < 40 && !ready; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const local = await Promise.all(['app', 'browser'].filter(name => config.services[name]).map(name => tcpReady(config.services[name].localPort)));
+    if (agentState(label) !== 'running' || !local.every(Boolean)) continue;
+    const listeners = ssh(config, 'ss -ltnH\n').split('\n').map(line => line.trim().split(/\s+/)[3]).filter(Boolean);
+    ready = remote.every(port => {
+      const bound = listeners.filter(address => address.endsWith(`:${port}`));
+      return bound.length === 1 && bound[0] === `127.0.0.1:${port}`;
+    });
+  }
+  if (!ready) throw new Error(`Tunnel not ready (or WSL sshd has GatewayPorts yes). See ${paths.directory}/tunnel.log.`);
+
+  ssh(config, `set -eu; umask 077; cd "$HOME/.config/remote-access"
+printf %s ${shellQuote(`${JSON.stringify(config, null, 2)}\n`)} > config.json
+${config.services.browser ? `printf %s ${shellQuote(readFileSync(path.join(runtime, 'browser-client.mjs'), 'utf8'))} > browser-client.mjs
+printf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > browser-token` : ''}
+`);
+  const report = status(config);
+  if (report.services.macLogin === 'unavailable') throw new Error('Mac SSH from WSL failed; check Remote Login allows this account.');
+  return report;
 }
 
-export function stop({ home = homedir(), execute = run } = {}) {
-  const paths = locations(home, 'darwin');
-  execute('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${label}`]);
-  return paths;
-}
-
-export function start({ home = homedir(), execute = run } = {}) {
-  const paths = locations(home, 'darwin');
-  execute('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, paths.plist]);
-  return paths;
+export function uninstall(home = homedir()) {
+  stop(home);
+  for (const file of plists(locations(home, 'darwin'))) rmSync(file, { force: true });
 }

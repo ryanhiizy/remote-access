@@ -2,17 +2,18 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 
+export const label = 'io.github.ryanhiizy.remote-access';
+export const browserLabel = `${label}.browser`;
+export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
 export function readEndpoint(profile) {
   try {
     const [port, websocket, extra] = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
-    if (extra !== undefined || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535
-      || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(websocket ?? '')) return null;
+    if (extra !== undefined || !/^\d+$/.test(port) || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(websocket ?? '')) return null;
     return { port: Number(port), path: websocket };
   } catch { return null; }
 }
-
-export const label = 'io.github.ryanhiizy.remote-access';
-export const serviceNames = ['app', 'executor', 'browser', 'macLogin'];
 
 export function locations(home = homedir(), platform = process.platform) {
   const directory = platform === 'darwin'
@@ -21,61 +22,39 @@ export function locations(home = homedir(), platform = process.platform) {
   return {
     directory,
     config: path.join(directory, 'config.json'),
-    log: path.join(directory, 'tunnel.log'),
-    plist: path.join(home, 'Library/LaunchAgents', `${label}.plist`),
     sshConfig: path.join(directory, 'mac-ssh.conf'),
+    agents: path.join(home, 'Library/LaunchAgents'),
   };
 }
 
 function port(value, minimum, name) {
-  if (!Number.isInteger(value) || value < minimum || value > 65535) {
-    throw new Error(`${name} must be an integer from ${minimum} to 65535.`);
-  }
+  if (!Number.isInteger(value) || value < minimum || value > 65535) throw new Error(`${name} must be an integer from ${minimum} to 65535.`);
   return value;
 }
 
 export function validateConfig(input) {
-  if (!input || input.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.host ?? '')) {
+  if (input?.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.host ?? '')) {
     throw new Error('Use version 1 and an SSH host alias without spaces or options.');
   }
-  if (!input.services || Object.keys(input.services).some(name => !serviceNames.includes(name))) {
-    throw new Error(`services may contain only ${serviceNames.join(', ')}.`);
-  }
+  const { app, browser, macLogin } = input.services ?? {};
   const services = {};
-  const macListeners = new Set();
-  const wslListeners = new Set();
-  for (const name of serviceNames) {
-    const service = input.services[name];
-    if (service === undefined || service === false) continue;
-    const localPort = port(service.localPort, name === 'macLogin' ? 1 : 1024, `${name}.localPort`);
-    const remotePort = port(service.remotePort, 1024, `${name}.remotePort`);
-    // Browser's Mac relay is also a listener, and app/Executor targets already
-    // occupy their WSL ports. No service may reuse another service's endpoint.
-    if (macListeners.has(localPort) || wslListeners.has(remotePort)) throw new Error('Duplicate service endpoint port.');
-    macListeners.add(localPort); wslListeners.add(remotePort);
-    services[name] = { localPort, remotePort };
-    if (name === 'browser') {
-      if (typeof service.profile !== 'string' || !path.isAbsolute(service.profile) || /[\r\n\0]/.test(service.profile)) {
-        throw new Error('browser.profile must be the absolute path to your existing Helium profile.');
-      }
-      services[name].profile = service.profile;
-      if (service.shared !== undefined && typeof service.shared !== 'boolean') throw new Error('browser.shared must be boolean.');
-      services[name].shared = service.shared ?? false;
+  if (app) services.app = { localPort: port(app.localPort, 1024, 'app.localPort'), remotePort: port(app.remotePort, 1024, 'app.remotePort') };
+  if (browser) {
+    if (typeof browser.profile !== 'string' || !path.isAbsolute(browser.profile) || /[\r\n\0]/.test(browser.profile)) {
+      throw new Error('browser.profile must be the absolute path to your Helium profile.');
     }
-    if (name === 'macLogin') {
-      if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(service.user ?? '')) {
-        throw new Error('macLogin.user must be your Mac account username.');
-      }
-      services[name].user = service.user;
-    }
+    services.browser = { localPort: port(browser.localPort, 1024, 'browser.localPort'), remotePort: port(browser.remotePort, 1024, 'browser.remotePort'), profile: browser.profile };
   }
-  if (!Object.keys(services).length) throw new Error('Enable at least one service.');
-  const replaceAgents = input.replaceAgents ?? [];
-  if (!Array.isArray(replaceAgents) || replaceAgents.some(agent =>
-    typeof agent !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent) || agent === label)) {
-    throw new Error('replaceAgents must contain other LaunchAgent labels, without paths.');
+  if (macLogin) {
+    if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(macLogin.user ?? '')) throw new Error('macLogin.user must be your Mac username.');
+    services.macLogin = { localPort: port(macLogin.localPort, 1, 'macLogin.localPort'), remotePort: port(macLogin.remotePort, 1024, 'macLogin.remotePort'), user: macLogin.user };
   }
-  return { version: 1, host: input.host, services, replaceAgents: [...new Set(replaceAgents)] };
+  const list = Object.values(services);
+  if (!list.length) throw new Error('Enable at least one of app, browser and macLogin.');
+  for (const side of ['localPort', 'remotePort']) {
+    if (new Set(list.map(service => service[side])).size !== list.length) throw new Error('Duplicate service port.');
+  }
+  return { version: 1, host: input.host, services };
 }
 
 export function defaultConfig(host, macLogin = false) {
@@ -83,57 +62,46 @@ export function defaultConfig(host, macLogin = false) {
     version: 1, host,
     services: {
       app: { localPort: 8080, remotePort: 8080 },
-      browser: { localPort: 19222, remotePort: 9223, shared: true, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
+      browser: { localPort: 19222, remotePort: 9223, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
       ...(macLogin ? { macLogin: { localPort: 22, remotePort: 2222, user: userInfo().username } } : {}),
     },
   });
 }
 
-export function sshArgs(config) {
-  const args = ['-N', '-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no',
-    '-o', 'ControlPath=none', '-o', 'GatewayPorts=no',
-    '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
-    '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3'];
-  for (const [name, service] of Object.entries(config.services)) {
-    const local = ['app', 'executor'].includes(name);
-    args.push(local ? '-L' : '-R', local
-      ? `127.0.0.1:${service.localPort}:127.0.0.1:${service.remotePort}`
-      : `127.0.0.1:${service.remotePort}:127.0.0.1:${service.localPort}`);
+// launchd restarts ssh on exit; ServerAlive and ExitOnForwardFailure make it
+// exit on a dead link or a taken port, so no supervisor process is needed.
+export function sshArgs(config, sshConfig) {
+  const args = ['-N', '-T', '-F', sshConfig, '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+    '-o', 'GatewayPorts=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
+    '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3'];
+  for (const [name, { localPort, remotePort }] of Object.entries(config.services)) {
+    args.push(...(name === 'app'
+      ? ['-L', `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`]
+      : ['-R', `127.0.0.1:${remotePort}:127.0.0.1:${localPort}`]));
   }
-  args.push(config.host);
-  return args;
+  return [...args, config.host];
 }
 
-export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-export const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-
+// Resolve the user's alias once, keeping connection/authentication options but
+// dropping inherited forwards and multiplexing that could duplicate listeners.
 export function connectionConfig(resolved, home = homedir()) {
-  // Resolve the user's alias once, preserving connection/authentication options
-  // while removing inherited forwards that could duplicate or expose listeners.
-  const excluded = new Set(['host', 'localforward', 'remoteforward', 'dynamicforward',
-    'clearallforwardings', 'controlmaster', 'controlpath', 'controlpersist',
-    'remotecommand', 'localcommand', 'permitlocalcommand']);
+  const excluded = new Set(['host', 'localforward', 'remoteforward', 'dynamicforward', 'clearallforwardings',
+    'controlmaster', 'controlpath', 'controlpersist', 'remotecommand', 'localcommand', 'permitlocalcommand']);
   const host = resolved.split('\n').find(line => line.startsWith('host '))?.slice(5);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(host ?? '')) throw new Error('ssh -G did not resolve a valid host alias.');
   const lines = resolved.trim().split('\n').filter(line => !excluded.has(line.split(' ')[0].toLowerCase()));
-  // Jump hosts still use the user's original configuration; the target's
-  // resolved block never imports its old forwards.
   return `Host ${host}\n${lines.map(line => `  ${line}`).join('\n')}\nHost !${host} *\n  Include ${JSON.stringify(path.join(home, '.ssh/config'))}\n`;
 }
 
-export function tunnelPlist(config, paths, node = process.execPath) {
-  const args = [node, path.join(paths.directory, 'runtime/worker.mjs'), paths.directory];
-  return `<?xml version="1.0" encoding="UTF-8"?>
+export const plist = (name, args, log) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>${label}</string>
+<key>Label</key><string>${name}</string>
 <key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>10</integer>
-<key>StandardOutPath</key><string>${xml(paths.log)}</string>
-<key>StandardErrorPath</key><string>${xml(paths.log)}</string>
+<key>StandardOutPath</key><string>${xml(log)}</string>
+<key>StandardErrorPath</key><string>${xml(log)}</string>
 </dict></plist>
 `;
-}
