@@ -7,7 +7,7 @@
     "remote-access": "bin/remote-access.mjs"
   },
   "scripts": {
-    "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs && node --check src/browser-service.mjs && node --check src/browser-client.mjs && node --check src/browser-open.mjs && node --check src/browser-routing.mjs"
+    "check": "node --check bin/remote-access.mjs && node --check src/config.mjs && node --check src/manager.mjs && node --check src/worker.mjs && node --check src/browser-service.mjs && node --check src/browser-client.mjs && node --check src/browser-open.mjs && node --check src/helpers.mjs && node --check src/skills-sync.mjs"
   },
   "engines": {
     "node": ">=22.12"

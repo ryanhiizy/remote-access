@@ -3,8 +3,9 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { defaultConfig, label, locations, shellQuote, tunnelPlist, validateConfig } from '../src/config.mjs';
 import { install, inventory, privateWrite, run, start, status, stop } from '../src/manager.mjs';
-import { openBrowser } from '../src/browser-open.mjs';
-import { installBrowserRouting } from '../src/browser-routing.mjs';
+import { openOnMac } from '../src/browser-open.mjs';
+import { installHelpers } from '../src/helpers.mjs';
+import { main as skillsSync } from '../src/skills-sync.mjs';
 
 const help = `Usage: remote-access <command> [options]
 
@@ -17,8 +18,10 @@ const help = `Usage: remote-access <command> [options]
   logs                                 Show the last 60 tunnel log lines
   uninstall                            Stop and remove our LaunchAgent only
   mac -- COMMAND [ARG...]              Run a command on the Mac from WSL
-  open HTTP_OR_HTTPS_URL               Open a tab in your existing Mac Helium profile
-  browser-install                      Route remote Linux URL openers through Helium
+  open URL_OR_PATH                     Open a URL in Mac Helium, or copy a file/folder to the Mac and open it
+  install-helpers                      Route xdg-open/BROWSER and pbcopy/pbpaste to the Mac
+  skills-sync [--dry-run] [--prefer mac|wsl]
+                                       Sync agent skills with the Mac (run on WSL)
 
 Options: --config FILE, --host SSH_ALIAS, --mac-login, --replace LABEL (repeatable), --json
 Configuration defaults to the user's remote-access application-data directory.
@@ -32,16 +35,17 @@ export async function main(args = process.argv.slice(2)) {
     if (process.platform === 'darwin') throw new Error('Run open from the remote Linux machine.');
     const rest = args.slice(1);
     if (rest[0] === '--') rest.shift();
-    if (rest.length !== 1) throw new Error('Usage: remote-access open HTTP_OR_HTTPS_URL');
-    await openBrowser(rest[0]);
+    if (rest.length !== 1) throw new Error('Usage: remote-access open URL_OR_PATH');
+    await openOnMac(rest[0]);
     return;
   }
-  if (command === 'browser-install') {
-    if (args.length !== 1) throw new Error('Usage: remote-access browser-install');
-    console.log(JSON.stringify(installBrowserRouting(), null, 2));
+  if (command === 'install-helpers') {
+    if (args.length !== 1) throw new Error('Usage: remote-access install-helpers');
+    console.log(JSON.stringify(installHelpers(), null, 2));
     console.log('Keep ~/.local/bin on PATH. Set BROWSER to the reported browser executable for clients that use that variable.');
     return;
   }
+  if (command === 'skills-sync') { await skillsSync(args.slice(1)); return; }
   if (command === 'mac') {
     if (process.platform === 'darwin') throw new Error('Run mac from WSL.');
     const rest = args.slice(1);
