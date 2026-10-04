@@ -32,8 +32,12 @@ function port(value, minimum, name) {
   return value;
 }
 
+const hostname = /^[A-Za-z0-9][A-Za-z0-9.:_-]*$/;
+
+// host: SSH alias from the Mac to WSL. address (optional): overrides its
+// HostName, e.g. the WSL machine's Tailscale name, keeping the alias's auth.
 export function validateConfig(input) {
-  if (input?.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.host ?? '')) {
+  if (input?.version !== 1 || !hostname.test(input.host ?? '')) {
     throw new Error('Use version 1 and an SSH host alias without spaces or options.');
   }
   const { app, browser, macLogin } = input.services ?? {};
@@ -45,28 +49,34 @@ export function validateConfig(input) {
     }
     services.browser = { localPort: port(browser.localPort, 1024, 'browser.localPort'), remotePort: port(browser.remotePort, 1024, 'browser.remotePort'), profile: browser.profile };
   }
+  // WSL reaches the Mac's own sshd directly over Tailscale; no forward needed.
   if (macLogin) {
-    if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(macLogin.user ?? '')) throw new Error('macLogin.user must be your Mac username.');
-    services.macLogin = { localPort: port(macLogin.localPort, 1, 'macLogin.localPort'), remotePort: port(macLogin.remotePort, 1024, 'macLogin.remotePort'), user: macLogin.user };
+    if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(macLogin.user ?? '') || !hostname.test(macLogin.address ?? '')) {
+      throw new Error('macLogin needs user (Mac username) and address (Mac Tailscale name).');
+    }
+    services.macLogin = { user: macLogin.user, address: macLogin.address };
   }
-  const list = Object.values(services);
-  if (!list.length) throw new Error('Enable at least one of app, browser and macLogin.');
+  const forwards = [services.app, services.browser].filter(Boolean);
+  if (!forwards.length && !services.macLogin) throw new Error('Enable at least one of app, browser and macLogin.');
   for (const side of ['localPort', 'remotePort']) {
-    if (new Set(list.map(service => service[side])).size !== list.length) throw new Error('Duplicate service port.');
+    if (new Set(forwards.map(service => service[side])).size !== forwards.length) throw new Error('Duplicate service port.');
   }
-  return { version: 1, host: input.host, services };
+  if (input.address !== undefined && !hostname.test(input.address)) throw new Error('address must be a hostname or IP.');
+  return { version: 1, host: input.host, ...(input.address ? { address: input.address } : {}), services };
 }
 
-export function defaultConfig(host, macLogin = false) {
+export function defaultConfig(host, macAddress) {
   return validateConfig({
     version: 1, host,
     services: {
       app: { localPort: 8080, remotePort: 8080 },
       browser: { localPort: 19222, remotePort: 9223, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
-      ...(macLogin ? { macLogin: { localPort: 22, remotePort: 2222, user: userInfo().username } } : {}),
+      ...(macAddress ? { macLogin: { user: userInfo().username, address: macAddress } } : {}),
     },
   });
 }
+
+export const hostArgs = config => (config.address ? ['-o', `HostName=${config.address}`] : []);
 
 // launchd restarts ssh on exit; ServerAlive and ExitOnForwardFailure make it
 // exit on a dead link or a taken port, so no supervisor process is needed.
@@ -74,11 +84,9 @@ export function sshArgs(config, sshConfig) {
   const args = ['-N', '-T', '-F', sshConfig, '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
     '-o', 'GatewayPorts=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
     '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3'];
-  for (const [name, { localPort, remotePort }] of Object.entries(config.services)) {
-    args.push(...(name === 'app'
-      ? ['-L', `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`]
-      : ['-R', `127.0.0.1:${remotePort}:127.0.0.1:${localPort}`]));
-  }
+  const { app, browser } = config.services;
+  if (app) args.push('-L', `127.0.0.1:${app.localPort}:127.0.0.1:${app.remotePort}`);
+  if (browser) args.push('-R', `127.0.0.1:${browser.remotePort}:127.0.0.1:${browser.localPort}`);
   return [...args, config.host];
 }
 

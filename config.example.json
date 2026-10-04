@@ -1,9 +1,10 @@
 {
   "version": 1,
   "host": "your-wsl-ssh-alias",
+  "address": "your-wsl.tailnet.ts.net",
   "services": {
     "app": { "localPort": 8080, "remotePort": 8080 },
     "browser": { "localPort": 19222, "remotePort": 9223, "profile": "/Users/you/Library/Application Support/net.imput.helium" },
-    "macLogin": { "localPort": 22, "remotePort": 2222, "user": "you" }
+    "macLogin": { "user": "you", "address": "your-mac.tailnet.ts.net" }
   }
 }

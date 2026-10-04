@@ -9,7 +9,7 @@ import { installHelpers, skillsSync } from '../src/helpers.mjs';
 
 const help = `Usage: remote-access <command>
 
-Mac:  init --host WSL_SSH_ALIAS [--mac-login] | install | start | stop | restart | logs | uninstall
+Mac:  init --host WSL_SSH_ALIAS [--address WSL_TAILSCALE_NAME] [--mac-address MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl]
 Both: status [--json]   (nonzero when a service is unavailable)
 `;
@@ -26,9 +26,10 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
   switch (command) {
     case 'init': {
       only(true, command);
-      const { values } = parseArgs({ args: rest, options: { host: { type: 'string' }, 'mac-login': { type: 'boolean' } } });
+      const { values } = parseArgs({ args: rest, options: { host: { type: 'string' }, address: { type: 'string' }, 'mac-address': { type: 'string' } } });
       if (existsSync(paths.config)) throw new Error(`${paths.config} exists; edit it instead.`);
-      privateWrite(paths.config, `${JSON.stringify(defaultConfig(values.host ?? '', values['mac-login']), null, 2)}\n`);
+      const config = { ...defaultConfig(values.host ?? '', values['mac-address']), ...(values.address ? { address: values.address } : {}) };
+      privateWrite(paths.config, `${JSON.stringify(validateConfig(config), null, 2)}\n`);
       return console.log(`Saved ${paths.config}. Review it, then run install.`);
     }
     case 'install': only(true, command); return console.log(JSON.stringify(await install(readConfig()), null, 2));

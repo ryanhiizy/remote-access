@@ -8,22 +8,28 @@ logs stay outside this checkout.
 |---|---|---|---|
 | `app` | Mac → WSL | Mac 8080 → WSL 8080 | App gateway on WSL |
 | `browser` | WSL → Mac | WSL 9223 → Mac 19222 → Helium | Helium with `helium://inspect/#remote-debugging` on |
-| `macLogin` | WSL → Mac | WSL 2222 → Mac 22 | Remote Login (System Settings → General → Sharing) |
+| `macLogin` | WSL → Mac | Mac 22 over Tailscale | Remote Login (System Settings → General → Sharing) |
 
-Every listener is loopback-only. launchd keeps two Mac jobs alive: plain `ssh`
-with the forwards (`ServerAliveInterval`, `ExitOnForwardFailure`), and the
-shared browser service.
+Both machines are on one Tailscale tailnet. launchd keeps two Mac jobs alive:
+plain `ssh` to WSL over Tailscale carrying the loopback-only forwards
+(`ServerAliveInterval`, `ExitOnForwardFailure`), and the shared browser
+service. App and browser stay on loopback forwards because the Mac browser must
+see `localhost` (secure context, OAuth callbacks) and the browser service should
+not listen on the network. Mac login goes direct, so it works while the tunnel
+is down.
 
 ## Setup
 
-Requirements: Node 22.12+ on both machines, an SSH alias from the Mac to WSL
-with unattended key auth, `curl` and `ss` on WSL, and Unison 2.52+ on both
+Requirements: Tailscale on both machines (WSL in mirrored networking mode sees
+the Windows client), Node 22.12+, an SSH alias from the Mac to WSL with
+unattended key auth, `curl` and `ss` on WSL, and Unison 2.52+ on both
 (`brew install unison`) for `skills-sync`.
 
 ```sh
 # Mac
 npm ci --ignore-scripts && npm link --ignore-scripts
-remote-access init --host WSL_ALIAS --mac-login   # writes ~/Library/Application Support/remote-access/config.json
+remote-access init --host WSL_ALIAS --address WSL.TAILNET.ts.net --mac-address MAC.TAILNET.ts.net
+# writes ~/Library/Application Support/remote-access/config.json; address overrides the alias's HostName
 remote-access install                             # rerun after updating this checkout or Node
 # WSL
 npm link --ignore-scripts
@@ -33,8 +39,8 @@ export BROWSER="$HOME/.local/bin/remote-access-browser"   # persist in your shel
 
 `install` snapshots its runtime into application data, so moving the checkout
 does not break autostart. With `macLogin` it creates a key on WSL, authorizes
-only that key on the Mac (loopback-only, no forwarding) and pins the Mac host
-key. Reinstalling restarts the browser service, so the next browser tool call
+only that key on the Mac (from loopback or the Tailscale range, no forwarding)
+and pins the Mac host key. Reinstalling restarts the browser service, so the next browser tool call
 asks for approval in Helium again.
 
 ## Use from WSL
