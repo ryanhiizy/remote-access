@@ -51,6 +51,7 @@ scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC_TAILSCALE_NAME:PATH
 remote-access open URL_OR_PATH         # same as xdg-open
 printf hi | pbcopy; pbpaste            # Mac clipboard
 remote-access skills-sync [--prefer mac|wsl]
+remote-access gcloud-login            # refresh gcloud login + ADC; approve on the Mac
 ```
 
 The configured Mac Tailscale name is also its SSH host entry. The CLI, clipboard,

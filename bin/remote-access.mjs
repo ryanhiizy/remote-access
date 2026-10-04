@@ -5,12 +5,12 @@ import { parseArgs } from 'node:util';
 import { defaultConfig, locations, shellQuote, validateConfig } from '../src/config.mjs';
 import { install, privateWrite, start, status, stop, uninstall } from '../src/manager.mjs';
 import { openOnMac } from '../src/browser-open.mjs';
-import { installHelpers, skillsSync } from '../src/helpers.mjs';
+import { gcloudLogin, installHelpers, skillsSync } from '../src/helpers.mjs';
 
 const help = `Usage: remote-access <command>
 
 Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall
-WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl]
+WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
 Both: status [--json]   (nonzero when a service is unavailable)
 `;
 
@@ -69,6 +69,7 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
       return openOnMac(rest[0]);
     case 'install-helpers': only(false, command); return console.log(JSON.stringify(installHelpers(), null, 2));
     case 'skills-sync': only(false, command); return skillsSync(rest);
+    case 'gcloud-login': only(false, command); return gcloudLogin();
     default: console.log(help);
   }
 }
