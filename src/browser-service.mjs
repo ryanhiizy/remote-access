@@ -2,18 +2,18 @@
 // Run by launchd: node browser-service.mjs PORT PROFILE TOKEN_FILE
 import 'chrome-devtools-mcp/build/src/utils/polyfill.js';
 import { BrowserManager } from 'chrome-devtools-mcp/build/src/BrowserManager.js';
-import { McpServer } from 'chrome-devtools-mcp';
 import { parseArguments } from 'chrome-devtools-mcp/build/src/config/mcp-options.js';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readEndpoint } from './config.mjs';
+import { BrowserSessions, sessionMcpServer } from './browser-sessions.mjs';
 
 const maxMessageBytes = 8 * 1024 * 1024;
 
-// One MCP context per client preserves tab selection and request identifiers.
-// Closing a client must not disconnect the shared Helium connection.
+// Socket lifetime does not own browser sessions. Executor can multiplex chats
+// on one socket and replace that socket between successive tool calls.
 export class SocketTransport {
   constructor(socket, initial = '') { this.socket = socket; this.buffer = initial; }
   async start() {
@@ -63,9 +63,10 @@ export function sharedBrowserManager(manager, endpoint) {
 export function sharedBrowserService(profile, token) {
   if (!/^[a-f0-9]{64}$/.test(token ?? '')) throw new Error('Shared browser token missing. Run remote-access install.');
   const args = parseArguments('1.10.1', ['node', 'shared-browser', '--autoConnect',
-    `--user-data-dir=${profile}`, '--no-usage-statistics', '--no-performance-crux']);
+    `--user-data-dir=${profile}`, '--no-usage-statistics', '--no-performance-crux', '--allow-unrestricted-paths']);
   const manager = new BrowserManager(args, {});
   const shared = sharedBrowserManager(manager, () => readEndpoint(profile));
+  const browserSessions = new BrowserSessions(shared, args);
   const sessions = new Set();
   const expected = Buffer.from(token);
   const server = createServer(socket => {
@@ -97,7 +98,7 @@ export function sharedBrowserService(profile, token) {
         // The token authenticates this transport, not the MCP/browser protocol.
         delete request.remoteAccessToken;
         initial = `${JSON.stringify(request)}\n${initial.slice(end + 1)}`;
-        const mcp = await McpServer.from(args, { browserManager: shared });
+        const mcp = await sessionMcpServer(args, browserSessions);
         if (socket.destroyed) { await mcp.close(); return; }
         sessions.add(mcp);
         socket.once('close', () => { sessions.delete(mcp); void mcp.close().catch(error => console.error(error.message)); });
@@ -106,7 +107,7 @@ export function sharedBrowserService(profile, token) {
     };
     socket.on('data', first);
   });
-  return { server, close: () => manager.close() };
+  return { server, close: async () => { await browserSessions.close(); await manager.close(); } };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
