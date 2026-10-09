@@ -5,9 +5,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { locations } from './config.mjs';
+import { jsonResult, recordingOutput, recordingListOutput } from './browser-results.mjs';
 
 const directory = () => join(locations(homedir(), 'darwin').directory, 'recordings');
-const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 const errorText = error => error instanceof Error ? error.message : String(error);
 
 // Recording IDs and page IDs are scoped to the owning chat, independent of MCP
@@ -38,13 +38,15 @@ export class BrowserRecordings {
       : name === 'stop_video_recording' ? ['recordingId'] : [];
     if (Object.keys(params).some(key => !allowed.includes(key))) throw new Error(`Accepted arguments: ${allowed.join(', ') || 'sessionId only'}.`);
     if (name === 'list_video_recordings') {
-      return result({ pages: await this.availablePages(browser), recordings: [...this.recordings.values()].map(recording => this.describe(recording)) });
+      return jsonResult({ pages: await this.availablePages(browser), recordings: [...this.recordings.values()].map(recording => this.describe(recording)) });
     }
     if (name === 'stop_video_recording') {
-      const recording = this.recordings.get(params.recordingId);
+      const recording = params.recordingId === undefined
+        ? [...this.recordings.values()].at(-1)
+        : this.recordings.get(params.recordingId);
       if (!recording) throw new Error('Unknown recording in this browser session.');
       await this.stop(recording, 'requested');
-      return { ...result(this.describe(recording)), ...(recording.error ? { isError: true } : {}) };
+      return { ...jsonResult(this.describe(recording)), ...(recording.error ? { isError: true } : {}) };
     }
     const maxSeconds = params.maxSeconds ?? 120;
     if (!Number.isInteger(maxSeconds) || maxSeconds < 1 || maxSeconds > 300) throw new Error('maxSeconds must be an integer from 1 to 300.');
@@ -71,7 +73,7 @@ export class BrowserRecordings {
     page.once('close', recording.onClose);
     recording.timer = setTimeout(() => { void this.stop(recording, 'time-limit'); }, maxSeconds * 1000);
     recording.timer.unref();
-    return result(this.describe(recording));
+    return jsonResult(this.describe(recording));
   }
   stop(recording, reason) {
     return recording.stopping ??= (async () => {
@@ -94,9 +96,9 @@ export class BrowserRecordings {
 }
 
 export const recordingTools = [
-  { name: 'list_video_recordings', description: 'List this session’s videos and owned tabs with recordingPageId values (distinct from DevTools pageId). Files are on the Mac.', properties: {} },
+  { name: 'list_video_recordings', description: 'List this session’s videos and owned tabs with recordingPageId values (distinct from DevTools pageId). Files are on the Mac.', properties: {}, outputSchema: recordingListOutput, annotations: { readOnlyHint: true } },
   { name: 'start_video_recording', description: 'Record one owned Helium tab as a silent WebM. With one tab, omit recordingPageId; otherwise get it from list_video_recordings. Stops after maxSeconds or when the session ends. Requires Chromium 153+; stop before closing the tab.',
-    properties: { recordingPageId: { type: 'string', format: 'uuid' }, maxSeconds: { type: 'integer', minimum: 1, maximum: 300, default: 120 } } },
-  { name: 'stop_video_recording', description: 'Finish a video and return its Mac path and size. Safe to repeat. On Linux use remote-access recording fetch RECORDING_ID [DESTINATION] before attaching it to a PR.',
-    properties: { recordingId: { type: 'string', format: 'uuid' } }, required: ['recordingId'] },
+    properties: { recordingPageId: { type: 'string', format: 'uuid' }, maxSeconds: { type: 'integer', minimum: 1, maximum: 300, default: 120 } }, outputSchema: recordingOutput },
+  { name: 'stop_video_recording', description: 'Finish this session’s latest video, or a specific recordingId. Returns saved path and size in structuredContent. Repeat with the same recordingId for a retry. On Linux: remote-access recording fetch RECORDING_ID [DESTINATION].',
+    properties: { recordingId: { type: 'string', format: 'uuid' } }, outputSchema: recordingOutput },
 ].map(({ properties, required = [], ...tool }) => ({ ...tool, inputSchema: { type: 'object', properties, required, additionalProperties: false } }));

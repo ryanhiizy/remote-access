@@ -6,8 +6,10 @@ tabs, call `list_video_recordings` and pass its `recordingPageId`; these IDs are
 separate from DevTools numeric page IDs. Recording stays on that tab when the
 selected tab changes. It captures the viewport, without audio or desktop UI.
 
-Call `stop_video_recording` with the returned `recordingId` before fetching the
-file. Stop is repeatable. The default duration limit is 120 seconds (maximum
+Call `stop_video_recording` before fetching the file. Omit `recordingId` to stop
+this session's latest recording; retain and supply the ID when retrying a stop
+after starting another recording. Session and video tools expose typed metadata
+in `structuredContent`, so Executor can use the ID without parsing text. The default duration limit is 120 seconds (maximum
 300); ending the session also finalizes the clip. Stop before closing its tab;
 closing the tab or browser can interrupt capture and leave a failed recording. The tools
 return Mac paths; recordings remain on disk after the session ends. Remove

@@ -7,6 +7,7 @@ import { McpServer as ChromeMcpServer } from 'chrome-devtools-mcp';
 import { Client, McpServer, Mutex } from 'chrome-devtools-mcp/build/src/third_party/index.js';
 
 import { BrowserRecordings, recordingTools } from './browser-recordings.mjs';
+import { jsonResult, sessionOutput, endSessionOutput, pageOutput, pageResultTools } from './browser-results.mjs';
 
 const downloadContexts = new WeakMap();
 function enableDownloads(context) {
@@ -75,7 +76,7 @@ export function ownedBrowser(browser) {
 // transports only connect it to the router; upstream owns schemas, handlers,
 // snapshots, filesystem policy and tool serialization.
 async function connectChrome(args, manager) {
-  const server = await ChromeMcpServer.from(args, { browserManager: manager });
+  const server = await ChromeMcpServer.from({ ...args, experimentalStructuredContent: true }, { browserManager: manager });
   const pair = [{}, {}];
   for (const [index, transport] of pair.entries()) {
     transport.start = async () => {};
@@ -131,7 +132,12 @@ export class BrowserSessions {
         if (session.browser && session.browser !== await this.manager.ensureBrowser()) throw new Error('Helium reconnected. Start a new browser session.');
         return await session.recordings.call(name, params, session.owned);
       }
-      return await session.connection.client.callTool({ name, arguments: params });
+      const result = await session.connection.client.callTool({ name, arguments: params });
+      // Only page discovery needs a second representation to chain calls. Keep
+      // screenshots, snapshots and diagnostic output in their original form.
+      if (pageResultTools.has(name)) return result;
+      const { structuredContent, ...contentResult } = result;
+      return contentResult;
     } finally { guard[Symbol.dispose](); }
   }
   async end(id) {
@@ -148,11 +154,13 @@ const textResult = text => ({ content: [{ type: 'text', text }] });
 const sessionTools = [
   {
     name: 'start_browser_session',
-    description: 'Call once per chat; retain sessionId. Use new_page to open owned tabs. Normal tabs share sign-in; other sessions’ tabs are excluded.',
+    outputSchema: sessionOutput,
+    description: 'Call once per chat; reuse sessionId across calls. Use new_page for owned tabs sharing sign-in. Session/page/video tools return structuredContent. With Executor, batch dependent calls sequentially and return only needed results.',
     inputSchema: { type: 'object', properties: { label: { type: 'string', minLength: 1, maxLength: 80 } }, required: ['label'], additionalProperties: false },
   },
   {
     name: 'end_browser_session',
+    outputSchema: endSessionOutput,
     description: 'Release this session and invalidate its IDs. Leaves tabs open and other sessions running.',
     inputSchema: { type: 'object', properties: { sessionId: sessionIdSchema }, required: ['sessionId'], additionalProperties: false },
   },
@@ -167,6 +175,7 @@ export async function sessionMcpServer(args, sessions) {
     try {
       const { tools } = await catalogue.client.listTools();
       return [...sessionTools, ...[...recordingTools, ...tools].map(tool => ({ ...tool,
+        ...(pageResultTools.has(tool.name) ? { outputSchema: pageOutput } : {}),
         inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, sessionId: sessionIdSchema }, required: [...(tool.inputSchema.required ?? []), 'sessionId'] },
       }))];
     } finally { await catalogue.close(); }
@@ -181,13 +190,13 @@ export async function sessionMcpServer(args, sessions) {
         const label = parameters.label?.trim();
         if (!label || label.length > 80 || Object.keys(parameters).some(key => key !== 'label')) throw new Error('Supply a task label of 1–80 characters.');
         const session = await sessions.start(label);
-        return textResult(JSON.stringify({ sessionId: session.id, label }));
+        return jsonResult({ sessionId: session.id, label });
       }
       const { sessionId, ...params } = parameters;
       if (name === 'end_browser_session') {
         if (Object.keys(params).length) throw new Error('Only sessionId is accepted.');
         await sessions.end(sessionId);
-        return textResult('Browser session ended. Tabs left open for the user.');
+        return { content: [{ type: 'text', text: 'Browser session ended. Tabs left open for the user.' }], structuredContent: { ended: true } };
       }
       return await sessions.call(sessionId, name, params);
     } catch (error) { return { ...textResult(error.message), isError: true }; }
