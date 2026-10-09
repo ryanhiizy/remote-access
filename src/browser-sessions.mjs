@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { McpServer as ChromeMcpServer } from 'chrome-devtools-mcp';
 import { Client, McpServer, Mutex } from 'chrome-devtools-mcp/build/src/third_party/index.js';
 
+import { BrowserRecordings, recordingTools } from './browser-recordings.mjs';
+
 const downloadContexts = new WeakMap();
 function enableDownloads(context) {
   if (!downloadContexts.has(context)) {
@@ -96,7 +98,7 @@ export class BrowserSessions {
   }
   async start(label) {
     if (this.sessions.size >= 128) throw new Error('Browser session limit reached. End an unused session first.');
-    const session = { id: randomUUID(), label, mutex: new Mutex() };
+    const session = { id: randomUUID(), label, mutex: new Mutex(), recordings: new BrowserRecordings() };
     this.sessions.set(session.id, session);
     try {
       session.connection = await connectChrome(this.args, {
@@ -125,13 +127,17 @@ export class BrowserSessions {
     const guard = await session.mutex.acquire();
     try {
       this.get(id); // An end queued before this call invalidates it.
+      if (recordingTools.some(tool => tool.name === name)) {
+        if (session.browser && session.browser !== await this.manager.ensureBrowser()) throw new Error('Helium reconnected. Start a new browser session.');
+        return await session.recordings.call(name, params, session.owned);
+      }
       return await session.connection.client.callTool({ name, arguments: params });
     } finally { guard[Symbol.dispose](); }
   }
   async end(id) {
     const session = this.get(id);
     const guard = await session.mutex.acquire();
-    try { await session.connection.close(); this.sessions.delete(id); }
+    try { await session.recordings.close(); await session.connection.close(); this.sessions.delete(id); }
     finally { guard[Symbol.dispose](); }
   }
   async close() { await Promise.all([...this.sessions.keys()].map(id => this.end(id))); }
@@ -153,14 +159,14 @@ const sessionTools = [
 ];
 
 export async function sessionMcpServer(args, sessions) {
-  // No tools are reimplemented or re-registered. Forward the upstream catalogue
-  // and calls, adding only the session envelope used to pick the owning server.
+  // Forward upstream tools unchanged, adding the session envelope and our
+  // recording tools. Each recording shares the owning session’s lifetime.
   // One catalogue per shared service, including simultaneous client connections.
   const tools = await (sessions.catalogue ??= (async () => {
     const catalogue = await connectChrome(args, { ensureBrowser: async () => { throw new Error('Catalogue connection cannot access Helium.'); }, close: async () => {} });
     try {
       const { tools } = await catalogue.client.listTools();
-      return [...sessionTools, ...tools.map(tool => ({ ...tool,
+      return [...sessionTools, ...[...recordingTools, ...tools].map(tool => ({ ...tool,
         inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, sessionId: sessionIdSchema }, required: [...(tool.inputSchema.required ?? []), 'sessionId'] },
       }))];
     } finally { await catalogue.close(); }

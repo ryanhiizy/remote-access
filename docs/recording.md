@@ -1,0 +1,31 @@
+# Browser video evidence
+
+Use Executor `helium_mac` with the chat's browser session. Open the tab to record
+with `new_page`, then call `start_video_recording`. If the session has several
+tabs, call `list_video_recordings` and pass its `recordingPageId`; these IDs are
+separate from DevTools numeric page IDs. Recording stays on that tab when the
+selected tab changes. It captures the viewport, without audio or desktop UI.
+
+Call `stop_video_recording` with the returned `recordingId` before fetching the
+file. Stop is repeatable. The default duration limit is 120 seconds (maximum
+300); closing the tab or ending the session also finalizes the clip. The tools
+return Mac paths; recordings remain on disk after the session ends. Remove
+unneeded files from `~/Library/Application Support/remote-access/recordings`.
+Only finalized files have a `.webm` extension; `.partial` files are incomplete.
+A service crash can leave a partial file that must not be used as evidence.
+
+On the remote machine:
+
+```sh
+remote-access recording fetch RECORDING_ID ./demo.webm
+gh pr comment PR_URL --body 'Browser verification' --attach ./demo.webm
+```
+
+Fetching uses the existing pinned SSH connection and refuses to overwrite a
+local file. Upload only after inspecting the clip for relevant content. A video
+shows the recorded actions; report separately which assertions were verified.
+
+Install `ffmpeg` on the Mac (`brew install ffmpeg`). After updating the source,
+run `remote-access install` there and refresh Executor's `helium_mac` tool
+catalogue on each Executor host. The Linux CLI must also use the updated source.
+GitHub CLI must support `gh pr comment --attach` for direct uploads.
