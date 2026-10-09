@@ -7,11 +7,13 @@ import { install, privateWrite, start, status, stop, uninstall } from '../src/ma
 import { openOnMac } from '../src/browser-open.mjs';
 import { gcloudLogin, installHelpers, skillsSync } from '../src/helpers.mjs';
 
+import { fetchRecording } from '../src/recording-files.mjs';
+
 const help = `Usage: remote-access <command>
 
 Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
-Both: status [--json]   (nonzero when a service is unavailable)
+Both: recording fetch RECORDING_ID [DESTINATION.webm] | status [--json]   (nonzero when a service is unavailable)
 `;
 
 const mac = process.platform === 'darwin';
@@ -53,6 +55,7 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
       if (bad) process.exitCode = 1;
       return;
     }
+    case 'recording': return console.log(await fetchRecording(rest));
     case 'mac': {
       only(false, command);
       if (rest[0] === '--') rest.shift();

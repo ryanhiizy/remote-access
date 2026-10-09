@@ -127,7 +127,7 @@ export async function install(input, home = homedir()) {
   await stop(home);
 
   privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
-  for (const module of ['config.mjs', 'browser-service.mjs', 'browser-client.mjs', 'browser-sessions.mjs']) {
+  for (const module of ['config.mjs', 'browser-service.mjs', 'browser-client.mjs', 'browser-sessions.mjs', 'browser-recordings.mjs', 'browser-results.mjs']) {
     privateWrite(path.join(runtime, module), readFileSync(fileURLToPath(new URL(`./${module}`, import.meta.url))));
   }
   const tokenFile = path.join(runtime, 'browser-token');
