@@ -13,16 +13,28 @@ in `structuredContent`, so Executor can use the ID without parsing text. The def
 300); ending the session also finalizes the clip. Stop before closing its tab;
 closing the tab or browser can interrupt capture and leave a failed recording. The tools
 return Mac paths; recordings remain on disk after the session ends. Remove
-unneeded files from `~/Library/Application Support/remote-access/recordings`.
+unneeded files from the dedicated directories below.
 Only finalized files have a `.webm` extension; `.partial` files are incomplete.
 A service crash can leave a partial file that must not be used as evidence.
 
 On the remote machine:
 
 ```sh
-remote-access recording fetch RECORDING_ID ./demo.webm
-gh pr comment PR_URL --body 'Browser verification' --attach ./demo.webm
+remote-access recording fetch RECORDING_ID
+gh pr comment PR_URL --body 'Browser verification' --attach "$HOME/.local/share/remote-access/recordings/RECORDING_ID.webm"
 ```
+
+Default locations:
+
+- Mac originals: `~/Library/Application Support/remote-access/recordings/`.
+- Remote Linux copies: `~/.local/share/remote-access/recordings/`.
+
+An explicit fetch destination overrides the Linux default. Fetching without a
+destination on the Mac returns the existing original path without copying it.
+After confirming the GitHub attachment succeeded, delete only that clip's Mac
+original and fetched copy unless the user asked to retain them. Keep files when
+upload fails or attachment status is uncertain; do not clear either directory
+wholesale. Cleanup is an agent workflow step, not automatic deletion by fetch.
 
 Fetching uses the existing pinned SSH connection and refuses to overwrite a
 local file. Upload only after inspecting the clip for relevant content. A video
