@@ -8,7 +8,8 @@ selected tab changes. It captures the viewport, without audio or desktop UI.
 
 Call `stop_video_recording` with the returned `recordingId` before fetching the
 file. Stop is repeatable. The default duration limit is 120 seconds (maximum
-300); closing the tab or ending the session also finalizes the clip. The tools
+300); ending the session also finalizes the clip. Stop before closing its tab;
+closing the tab or browser can interrupt capture and leave a failed recording. The tools
 return Mac paths; recordings remain on disk after the session ends. Remove
 unneeded files from `~/Library/Application Support/remote-access/recordings`.
 Only finalized files have a `.webm` extension; `.partial` files are incomplete.
@@ -25,7 +26,7 @@ Fetching uses the existing pinned SSH connection and refuses to overwrite a
 local file. Upload only after inspecting the clip for relevant content. A video
 shows the recorded actions; report separately which assertions were verified.
 
-Install `ffmpeg` on the Mac (`brew install ffmpeg`). After updating the source,
+Requires Helium based on Chromium 153+ for native recording. After updating the source,
 run `remote-access install` there and refresh Executor's `helium_mac` tool
 catalogue on each Executor host. The Linux CLI must also use the updated source.
 GitHub CLI must support `gh pr comment --attach` for direct uploads.

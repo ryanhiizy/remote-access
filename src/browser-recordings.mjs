@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createWriteStream, existsSync } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { mkdir, rename, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,6 @@ import { pipeline } from 'node:stream/promises';
 import { locations } from './config.mjs';
 
 const directory = () => join(locations(homedir(), 'darwin').directory, 'recordings');
-const ffmpegPath = () => ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find(existsSync) ?? 'ffmpeg';
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 const errorText = error => error instanceof Error ? error.message : String(error);
 
@@ -58,12 +57,12 @@ export class BrowserRecordings {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const recording = { id, page, path: join(this.directory, `${id}.webm`), state: 'recording', started: Date.now() };
-    // Own the output stream so stop waits for the file to finish, not just ffmpeg.
-    // Homebrew is not on launchd's PATH; use its absolute binary when present.
+    // Chromium records static pages too; the legacy PNG/ffmpeg screencast can
+    // produce no frames when nothing changes. Own the stream until file flush.
     try {
-      recording.recorder = await page.screencast({ ffmpegPath: ffmpegPath(), fps: 15, format: 'webm' });
+      recording.recorder = await page.record({ frameRate: 15, maxWidth: 1920, maxHeight: 1080, audio: false });
     } catch (error) {
-      throw new Error(`Could not start video recording: ${errorText(error)}. Install ffmpeg on the Mac (brew install ffmpeg).`);
+      throw new Error(`Could not start video recording: ${errorText(error)}. Use Helium based on Chromium 153 or newer.`);
     }
     recording.output = pipeline(recording.recorder, createWriteStream(`${recording.path}.partial`, { flags: 'wx', mode: 0o600 }))
       .catch(error => { recording.error = errorText(error); void this.stop(recording, 'output-error'); });
@@ -96,7 +95,7 @@ export class BrowserRecordings {
 
 export const recordingTools = [
   { name: 'list_video_recordings', description: 'List this session’s videos and owned tabs with recordingPageId values (distinct from DevTools pageId). Files are on the Mac.', properties: {} },
-  { name: 'start_video_recording', description: 'Record one owned Helium tab as a silent WebM. With one tab, omit recordingPageId; otherwise get it from list_video_recordings. Stops after maxSeconds or when the session ends. Requires ffmpeg on the Mac.',
+  { name: 'start_video_recording', description: 'Record one owned Helium tab as a silent WebM. With one tab, omit recordingPageId; otherwise get it from list_video_recordings. Stops after maxSeconds or when the session ends. Requires Chromium 153+; stop before closing the tab.',
     properties: { recordingPageId: { type: 'string', format: 'uuid' }, maxSeconds: { type: 'integer', minimum: 1, maximum: 300, default: 120 } } },
   { name: 'stop_video_recording', description: 'Finish a video and return its Mac path and size. Safe to repeat. On Linux use remote-access recording fetch RECORDING_ID [DESTINATION] before attaching it to a PR.',
     properties: { recordingId: { type: 'string', format: 'uuid' } }, required: ['recordingId'] },
