@@ -1,6 +1,6 @@
 # Browser video evidence
 
-Use Chromium's built-in WebM recorder through Executor `aside_mac.repl`.
+Use Chromium's built-in MP4 recorder through Executor `aside_mac.repl`.
 It needs Chromium 153+ and Aside's `_sendToTarget` method; report a blocker if
 either is unavailable. Aside's `page.video()` uses a different FFmpeg recorder
 that can lose frames or hang on stop. No FFmpeg or launch PATH change is needed
@@ -18,15 +18,15 @@ while (true) {
   if (chunk.data) chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? 'base64' : 'utf8'));
   if (chunk.eof) break;
 }
-const file = path.join(pwd, 'artifacts', `verification-${Date.now()}.webm`);
+const file = path.join(pwd, 'artifacts', `verification-${Date.now()}.mp4`);
 await fs.mkdir(path.dirname(file), { recursive: true });
 await fs.writeFile(file, Buffer.concat(chunks));
 await taskPage._sendToTarget('IO.close', { handle: clip.stream });
 console.log({ file, bytes: (await fs.stat(file)).size });
 ```
 
-Stop before closing the tab, including when the tested flow fails. Verify that
-the saved video shows the expected visual transitions; file existence alone
-is insufficient. Files belong to the Mac session: copy the returned path over
+Stop before closing the tab, including when the tested flow fails. Verify the
+container with `ffprobe` (match the extension) and the expected visual transitions;
+file existence alone is insufficient. Copy the returned Mac file path over
 the pinned SSH connection for WSL uploads. `remote-access recording fetch`
 accepts legacy Helium IDs, not Aside paths. Never print video chunks to the model.
