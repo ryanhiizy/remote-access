@@ -7,7 +7,7 @@ import { McpServer as ChromeMcpServer } from 'chrome-devtools-mcp';
 import { Client, McpServer, Mutex } from 'chrome-devtools-mcp/build/src/third_party/index.js';
 
 import { BrowserRecordings, recordingTools } from './browser-recordings.mjs';
-import { jsonResult, sessionOutput, endSessionOutput, pageOutput, pageResultTools } from './browser-results.mjs';
+import { jsonResult, sessionOutput, endSessionOutput, browserTool, browserArguments, browserResult } from './browser-results.mjs';
 
 const downloadContexts = new WeakMap();
 function enableDownloads(context) {
@@ -132,12 +132,8 @@ export class BrowserSessions {
         if (session.browser && session.browser !== await this.manager.ensureBrowser()) throw new Error('Helium reconnected. Start a new browser session.');
         return await session.recordings.call(name, params, session.owned);
       }
-      const result = await session.connection.client.callTool({ name, arguments: params });
-      // Only page discovery needs a second representation to chain calls. Keep
-      // screenshots, snapshots and diagnostic output in their original form.
-      if (pageResultTools.has(name)) return result;
-      const { structuredContent, ...contentResult } = result;
-      return contentResult;
+      const result = await session.connection.client.callTool({ name, arguments: browserArguments(name, params) });
+      return browserResult(name, params, result);
     } finally { guard[Symbol.dispose](); }
   }
   async end(id) {
@@ -167,15 +163,14 @@ const sessionTools = [
 ];
 
 export async function sessionMcpServer(args, sessions) {
-  // Forward upstream tools unchanged, adding the session envelope and our
-  // recording tools. Each recording shares the owning session’s lifetime.
+  // Add the session envelope and opt-in output controls around upstream tools.
+  // Each recording shares the owning session’s lifetime.
   // One catalogue per shared service, including simultaneous client connections.
   const tools = await (sessions.catalogue ??= (async () => {
     const catalogue = await connectChrome(args, { ensureBrowser: async () => { throw new Error('Catalogue connection cannot access Helium.'); }, close: async () => {} });
     try {
       const { tools } = await catalogue.client.listTools();
-      return [...sessionTools, ...[...recordingTools, ...tools].map(tool => ({ ...tool,
-        ...(pageResultTools.has(tool.name) ? { outputSchema: pageOutput } : {}),
+      return [...sessionTools, ...[...recordingTools, ...tools.map(browserTool)].map(tool => ({ ...tool,
         inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, sessionId: sessionIdSchema }, required: [...(tool.inputSchema.required ?? []), 'sessionId'] },
       }))];
     } finally { await catalogue.close(); }
