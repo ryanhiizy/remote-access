@@ -22,5 +22,6 @@ when visual inspection is needed. Discover relevant site skills on demand with
 Asidewright is Playwright-style, not a complete Playwright implementation.
 Do not infer support for context tracing, network events or viewport setters
 from Playwright documentation. Its installed browser objects provide
-`page.console.logs()` and [video recording](recording.md). Undocumented internal
-methods are version-dependent and should not become bridge dependencies.
+`page.console.logs()`; follow [video recording](recording.md) for browser-encoded
+clips. `_sendToTarget` is an internal Aside method, so recheck availability after
+updates; keep recording in the REPL rather than adding a bridge dependency.

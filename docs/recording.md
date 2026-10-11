@@ -1,27 +1,32 @@
 # Browser video evidence
 
-Aside exposes recording through the browser REPL:
+Use Chromium's built-in WebM recorder through Executor `aside_mac.repl`.
+It needs Chromium 153+ and Aside's `_sendToTarget` method; report a blocker if
+either is unavailable. Aside's `page.video()` uses a different FFmpeg recorder
+that can lose frames or hang on stop. No FFmpeg or launch PATH change is needed
+for the browser encoder.
 
 ```js
-const clip = taskPage.video();
-await clip.start({ path: path.join(pwd, 'artifacts', 'verification.webm') });
-// Perform and verify the requested UI actions on taskPage.
-await clip.stop();
-console.log(await clip.path());
+const clip = await taskPage._sendToTarget('Page.startScreenRecording', {
+  audio: false, maxWidth: 1920, maxHeight: 1080, frameRate: 15,
+});
+// Perform and verify UI actions; keep taskPage and clip across REPL calls.
+await taskPage._sendToTarget('Page.stopScreenRecording');
+const chunks = [];
+while (true) {
+  const chunk = await taskPage._sendToTarget('IO.read', { handle: clip.stream, size: 1048576 });
+  if (chunk.data) chunks.push(Buffer.from(chunk.data, chunk.base64Encoded ? 'base64' : 'utf8'));
+  if (chunk.eof) break;
+}
+const file = path.join(pwd, 'artifacts', `verification-${Date.now()}.webm`);
+await fs.mkdir(path.dirname(file), { recursive: true });
+await fs.writeFile(file, Buffer.concat(chunks));
+await taskPage._sendToTarget('IO.close', { handle: clip.stream });
+console.log({ file, bytes: (await fs.stat(file)).size });
 ```
 
-Keep the page and recorder handles across calls. Stop before closing the tab,
-and verify the completed file before presenting it as evidence. Recording
-captures the tab without audio; actions shown in a clip do not replace assertions.
-`start` also accepts `format` (`webm` or `mp4`), `size`, `framerate` and `quality`;
-`saveAs` copies a finished clip. Files and paths belong to the Mac session.
-Copy the exact returned file to WSL with the existing pinned SSH connection.
-
-Aside invokes `ffmpeg` by name in its GUI daemon's environment. Having Homebrew's
-FFmpeg in a terminal PATH is insufficient if Aside was launched without that
-PATH. Ensure it is discoverable by the daemon before recording; the installed
-recorder can terminate the daemon on a missing executable. Do not add a second
-recorder to work around this dependency.
-
-The retained `remote-access recording fetch` command is for old Helium recording
-IDs only; Aside clips use the file paths returned by `page.video().path()`.
+Stop before closing the tab, including when the tested flow fails. Verify that
+the saved video shows the expected visual transitions; file existence alone
+is insufficient. Files belong to the Mac session: copy the returned path over
+the pinned SSH connection for WSL uploads. `remote-access recording fetch`
+accepts legacy Helium IDs, not Aside paths. Never print video chunks to the model.
