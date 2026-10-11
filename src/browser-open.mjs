@@ -12,12 +12,12 @@ export function browserUrl(value) {
   let url;
   try { url = new URL(value); } catch { throw new Error('Pass one HTTP or HTTPS URL.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('Only HTTP and HTTPS URLs without embedded credentials can open in Helium.');
+    throw new Error('Only HTTP and HTTPS URLs without embedded credentials can open in Aside.');
   }
   return url.href;
 }
 
-// A web URL opens in Helium; anything else must name an existing local path.
+// A web URL opens in Aside; anything else must name an existing local path.
 export function openTarget(value) {
   if (typeof value !== 'string' || /[\r\n\0]/.test(value)) throw new Error('Pass one URL or path.');
   if (/^https?:/i.test(value)) return { url: browserUrl(value) };
@@ -29,7 +29,7 @@ export function openTarget(value) {
 export function macOpenScript(value) {
   // Native URL opening leaves the tab owned by the user, independent of an
   // ephemeral MCP client's lifecycle. Do not print callback URLs or tokens.
-  return `set -eu\n/usr/bin/pgrep -x Helium >/dev/null || exit 3\n/usr/bin/open -a Helium ${quote(browserUrl(value))}\n`;
+  return `set -eu\n/usr/bin/pgrep -x Aside >/dev/null || exit 3\n/usr/bin/open -a Aside ${quote(browserUrl(value))}\n`;
 }
 
 // Files are copied (not shared) into ~/Downloads/WSL and opened with their
@@ -83,7 +83,7 @@ export async function openOnMac(value, { directory = path.join(homedir(), '.conf
     archive?.once('error', () => finish(new Error('Unable to read the file for transfer.')));
     child.once('close', code => {
       if (code === 0) { if (target.file) log(`Opened on Mac: ${output.trim()}`); finish(); }
-      else if (code === 3) finish(new Error('Helium is not running on your Mac. Start Helium, then retry.'));
+      else if (code === 3) finish(new Error('Aside is not running on your Mac. Start Aside, then retry.'));
       else finish(new Error(target.url ? 'Mac URL opening failed. Check remote-access status and Mac Remote Login.'
         : 'Copying or opening the file on the Mac failed. Check remote-access status and Mac Remote Login.'));
     });

@@ -1,24 +1,20 @@
 # remote-access
 
-Mac ↔ WSL over Tailscale: shared Helium, app tunnel, shell, clipboard and files.
+Mac ↔ WSL over Tailscale: Aside access, app tunnel, shell, clipboard and files.
 Personal config, keys and logs stay outside this checkout.
 
 ## Agent workflow
 
-- Use Executor `helium_mac`. Call `start_browser_session` once per chat; pass its
-  `sessionId` on every call. `new_page` creates owned tabs; other sessions’ tabs
-  are excluded. Normal tabs share cookies; use `isolatedContext` for separate sign-ins.
-- Reuse sessions and page/snapshot IDs across client reconnects. Browser/service
-  restarts require a new session. Finish with `end_browser_session`; tabs stay open.
-- Upload/output paths are on the Mac, with the Mac account’s full file access.
-  Transfer WSL files first. Downloads save to the Mac’s `~/Downloads`.
-- Use `remote-access status --json` for diagnostics; nonzero means unavailable.
-  Browser states: `ready` = approved, `available` = awaiting connection,
-  `waiting-for-approval` = approval pending.
+- Use Aside through Executor `aside_mac`; follow the shared `aside-browser` skill.
+  Read [agent browser guidance](docs/agent-browser.md) for the remote boundary.
+- Aside runs on the Mac. Transfer WSL inputs first and copy artifacts back over SSH.
+- `remote-access status --json` diagnoses SSH and configured tunnels. Its legacy
+  browser status describes the optional Helium bridge, not Aside.
 
 WSL commands (the configured Mac Tailscale name is also its SSH host entry):
 
 ```sh
+aside guide                                  # Mac CLI over SSH
 remote-access mac -- COMMAND                  # omit COMMAND for a shell
 scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC_TAILSCALE_NAME:PATH
 remote-access open URL_OR_PATH                # also xdg-open
@@ -27,7 +23,7 @@ remote-access skills-sync [--prefer mac|wsl]
 remote-access gcloud-login                    # login + ADC; approve on Mac
 ```
 
-`open` dispatches URLs without waiting for load; files/folders are copied to
+`open` dispatches URLs to Aside without waiting for load; files/folders are copied to
 `~/Downloads/WSL` and opened. Edits do not sync back. Only the app port is forwarded;
 other OAuth callback ports need no-browser/device login. Skills sync uses Unison;
 conflicts are skipped unless `--prefer` is supplied. Shared skills belong in
@@ -41,7 +37,7 @@ unattended Mac → WSL SSH, WSL `curl`/`ss`, and Unison 2.52+ for skills sync.
 | Service | Route | Requirement |
 |---|---|---|
 | app | Mac 8080 → WSL 8080 | WSL app gateway |
-| browser | WSL 9223 → Mac 19222 → Helium | `helium://inspect/#remote-debugging` enabled |
+| browser (optional legacy bridge) | WSL 9223 → Mac 19222 → Helium | `helium://inspect/#remote-debugging` enabled |
 | macLogin | WSL → Mac 22 over Tailscale | Mac Remote Login enabled |
 
 ```sh
@@ -55,9 +51,15 @@ remote-access install-helpers
 export BROWSER="$HOME/.local/bin/remote-access-browser"  # persist in shell profile
 ```
 
-MCP stdio clients use `node ~/.config/remote-access/browser-client.mjs 9223` on WSL;
-on Mac, use `node "$HOME/Library/Application Support/remote-access/runtime/browser-client.mjs" 19222`.
-Keep the client persistent. Refresh Executor’s `helium_mac` catalogue on both machines after tool changes.
+Install Aside and its CLI on the Mac. `install-helpers` provides a WSL `aside`
+proxy; do not install a second native Aside CLI on WSL. Keep the vendor skill in
+`~/.agents/skills/aside-browser`, with Claude's entry symlinked there, and sync it
+using the existing skills workflow.
+
+Register a persistent stdio MCP server named `aside_mac` in each machine's
+Executor: command `~/.local/bin/aside` (expanded absolute path), args `["mcp"]`,
+`spawnPerCall: false`. The WSL command uses the pinned SSH connection. Aside does
+not depend on the legacy browser service or its port forward.
 
 `install` snapshots runtime files and provisions WSL → Mac SSH with a pinned host
 key and a Tailscale-only authorized key. launchd maintains the tunnel and browser
@@ -69,5 +71,5 @@ Uninstall leaves config and SSH authorization; remove the `remote-access-mac` en
 from `~/.ssh/authorized_keys` to revoke access.
 
 Keep this bridge small: reuse upstream tools, minimize repeated tool output and
-per-call work, and keep instructions concise. No repository test suite; use
-`npm run check` and disposable checks. Verify upstream internals when updating the pinned MCP dependency.
+per-call work, and keep instructions concise. Use `npm run check` and
+`node --test tests/*.test.mjs` for the adapter checks. Verify upstream internals when updating the pinned MCP dependency.

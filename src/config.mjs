@@ -68,7 +68,6 @@ export function defaultConfig(host, macAddress) {
     version: 1, host,
     services: {
       app: { localPort: 8080, remotePort: 8080 },
-      browser: { localPort: 19222, remotePort: 9223, profile: path.join(homedir(), 'Library/Application Support/net.imput.helium') },
       ...(macAddress ? { macLogin: { user: userInfo().username, address: macAddress } } : {}),
     },
   });
