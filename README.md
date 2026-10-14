@@ -1,7 +1,6 @@
 # remote-access
 
 Mac ↔ WSL over Tailscale: Aside access, app tunnel, shell, clipboard and files.
-Personal config, keys and logs stay outside this checkout.
 
 ## Agent workflow
 
@@ -13,7 +12,7 @@ Personal config, keys and logs stay outside this checkout.
 WSL commands (the configured Mac Tailscale name is also its SSH host entry):
 
 ```sh
-aside guide                                  # Mac CLI over SSH
+aside guide                                   # Mac CLI over SSH
 remote-access mac -- COMMAND                  # omit COMMAND for a shell
 scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC_TAILSCALE_NAME:PATH
 remote-access open URL_OR_PATH                # also xdg-open
