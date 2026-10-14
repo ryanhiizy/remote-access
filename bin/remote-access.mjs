@@ -4,16 +4,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { defaultConfig, locations, shellQuote, validateConfig } from '../src/config.mjs';
 import { install, privateWrite, start, status, stop, uninstall } from '../src/manager.mjs';
-import { openOnMac } from '../src/browser-open.mjs';
+import { openOnMac } from '../src/open.mjs';
 import { gcloudLogin, installHelpers, skillsSync } from '../src/helpers.mjs';
-
-import { fetchRecording } from '../src/recording-files.mjs';
 
 const help = `Usage: remote-access <command>
 
 Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
-Both: recording fetch RECORDING_ID [DESTINATION.webm] | status [--json]   (nonzero when a service is unavailable)
+Both: status [--json]   (nonzero when a service is unavailable)
 `;
 
 const mac = process.platform === 'darwin';
@@ -40,10 +38,8 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
     case 'uninstall': only(true, command); return uninstall();
     case 'logs':
       only(true, command);
-      for (const log of ['tunnel.log', 'browser.log']) {
-        const file = `${paths.directory}/${log}`;
-        if (existsSync(file)) console.log(`== ${log}\n${readFileSync(file, 'utf8').trimEnd().split('\n').slice(-30).join('\n')}`);
-      }
+      const log = `${paths.directory}/tunnel.log`;
+      if (existsSync(log)) console.log(readFileSync(log, 'utf8').trimEnd().split('\n').slice(-30).join('\n'));
       return;
     case 'status': {
       const report = status(readConfig());
@@ -55,7 +51,6 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
       if (bad) process.exitCode = 1;
       return;
     }
-    case 'recording': return console.log(await fetchRecording(rest));
     case 'mac': {
       only(false, command);
       if (rest[0] === '--') rest.shift();

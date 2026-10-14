@@ -28,5 +28,4 @@ console.log({ file, bytes: (await fs.stat(file)).size });
 Stop before closing the tab, including when the tested flow fails. Verify the
 container with `ffprobe` (match the extension) and the expected visual transitions;
 file existence alone is insufficient. Copy the returned Mac file path over
-the pinned SSH connection for WSL uploads. `remote-access recording fetch`
-accepts legacy Helium IDs, not Aside paths. Never print video chunks to the model.
+the pinned SSH connection for WSL uploads. Never print video chunks to the model.

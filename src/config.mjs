@@ -1,19 +1,9 @@
 import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
 
 export const label = 'io.github.ryanhiizy.remote-access';
-export const browserLabel = `${label}.browser`;
 export const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 const xml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-
-export function readEndpoint(profile) {
-  try {
-    const [port, websocket, extra] = readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').trim().split('\n');
-    if (extra !== undefined || !/^\d+$/.test(port) || !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(websocket ?? '')) return null;
-    return { port: Number(port), path: websocket };
-  } catch { return null; }
-}
 
 export function locations(home = homedir(), platform = process.platform) {
   const directory = platform === 'darwin'
@@ -39,15 +29,9 @@ export function validateConfig(input) {
   if (input?.version !== 1 || !hostname.test(input.host ?? '')) {
     throw new Error('Use version 1 and host set to the WSL Tailscale name.');
   }
-  const { app, browser, macLogin } = input.services ?? {};
+  const { app, macLogin } = input.services ?? {};
   const services = {};
   if (app) services.app = { localPort: port(app.localPort, 1024, 'app.localPort'), remotePort: port(app.remotePort, 1024, 'app.remotePort') };
-  if (browser) {
-    if (typeof browser.profile !== 'string' || !path.isAbsolute(browser.profile) || /[\r\n\0]/.test(browser.profile)) {
-      throw new Error('browser.profile must be the absolute path to your Helium profile.');
-    }
-    services.browser = { localPort: port(browser.localPort, 1024, 'browser.localPort'), remotePort: port(browser.remotePort, 1024, 'browser.remotePort'), profile: browser.profile };
-  }
   // WSL reaches the Mac's own sshd directly over Tailscale; no forward needed.
   if (macLogin) {
     if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(macLogin.user ?? '') || !hostname.test(macLogin.address ?? '')) {
@@ -55,11 +39,7 @@ export function validateConfig(input) {
     }
     services.macLogin = { user: macLogin.user, address: macLogin.address };
   }
-  const forwards = [services.app, services.browser].filter(Boolean);
-  if (!forwards.length && !services.macLogin) throw new Error('Enable at least one of app, browser and macLogin.');
-  for (const side of ['localPort', 'remotePort']) {
-    if (new Set(forwards.map(service => service[side])).size !== forwards.length) throw new Error('Duplicate service port.');
-  }
+  if (!services.app && !services.macLogin) throw new Error('Enable app, macLogin or both.');
   return { version: 1, host: input.host, services };
 }
 
@@ -80,9 +60,8 @@ export function sshArgs(config) {
   const args = ['-N', '-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
     '-o', 'GatewayPorts=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ConnectTimeout=10',
     '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3'];
-  const { app, browser } = config.services;
+  const { app } = config.services;
   if (app) args.push('-L', `127.0.0.1:${app.localPort}:127.0.0.1:${app.remotePort}`);
-  if (browser) args.push('-R', `127.0.0.1:${browser.remotePort}:127.0.0.1:${browser.localPort}`);
   return [...args, config.host];
 }
 

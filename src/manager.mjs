@@ -1,11 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
-import { randomBytes } from 'node:crypto';
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { browserLabel, label, locations, plist, shellQuote, sshArgs, validateConfig } from './config.mjs';
+import { label, locations, plist, shellQuote, sshArgs, validateConfig } from './config.mjs';
 
 export function run(program, args, options = {}) {
   const result = spawnSync(program, args, { encoding: 'utf8', timeout: 30000, ...options });
@@ -37,12 +35,10 @@ const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
 
 // Runs on WSL, so every check crosses the tunnel the way agents use it.
 export function probeScript(config) {
-  const { app, browser, macLogin } = config.services;
+  const { app, macLogin } = config.services;
   return [
     app && `code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${app.remotePort}/ || true)
 case "$code" in [1-5][0-9][0-9]) echo 'app ready';; *) echo 'app unavailable';; esac`,
-    browser && `state=$(curl -s --max-time 3 http://127.0.0.1:${browser.remotePort}/status | sed -n 's/.*"state":"\\([a-z-]*\\)".*/\\1/p')
-echo "browser \${state:-unavailable}"`,
     macLogin && `if timeout 8 ssh -F "$HOME/.config/remote-access/mac-ssh.conf" ${shellQuote(macLogin.address)} uname -s 2>/dev/null | grep -qx Darwin; then echo 'macLogin ready'; else echo 'macLogin unavailable'; fi`,
   ].filter(Boolean).join('\n');
 }
@@ -54,7 +50,7 @@ const agentState = name => {
 
 export function status(config, platform = process.platform) {
   const result = { side: platform === 'darwin' ? 'mac' : 'wsl', host: config.host, services: {} };
-  if (platform === 'darwin') result.agents = { tunnel: agentState(label), browser: config.services.browser ? agentState(browserLabel) : undefined };
+  if (platform === 'darwin') result.agents = { tunnel: agentState(label) };
   try {
     const output = platform === 'darwin' ? ssh(config, probeScript(config)) : run('/bin/sh', ['-s'], { input: probeScript(config) });
     for (const line of output.trim().split('\n')) { const [name, state] = line.split(' '); result.services[name] = state; }
@@ -87,30 +83,27 @@ printf '%s\\n' ${shellQuote(`${service.address} ${hostKey}`)} > mac_known_hosts
 }
 
 const domain = () => `gui/${process.getuid()}`;
-const plists = paths => [label, browserLabel].map(name => path.join(paths.agents, `${name}.plist`));
+const plistFile = paths => path.join(paths.agents, `${label}.plist`);
 
 const loaded = name => { try { run('/bin/launchctl', ['print', `${domain()}/${name}`]); return true; } catch { return false; } };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // bootout returns before launchd finishes unloading; wait so a following bootstrap does not fail.
 export async function stop(home = homedir()) {
-  for (const name of [label, browserLabel]) {
-    if (!loaded(name)) continue;
-    run('/bin/launchctl', ['bootout', `${domain()}/${name}`]);
-    for (let attempt = 0; attempt < 40 && loaded(name); attempt++) await pause(250);
+  if (loaded(label)) {
+    run('/bin/launchctl', ['bootout', `${domain()}/${label}`]);
+    for (let attempt = 0; attempt < 40 && loaded(label); attempt++) await pause(250);
   }
   return locations(home, 'darwin');
 }
 
 // launchd can still answer "Bootstrap failed: 5" briefly after an unload.
 export async function start(home = homedir()) {
-  const paths = locations(home, 'darwin');
-  for (const [name, file] of [label, browserLabel].map((name, index) => [name, plists(paths)[index]])) {
-    if (!existsSync(file) || loaded(name)) continue;
-    for (let attempt = 0; ; attempt++) {
-      try { run('/bin/launchctl', ['bootstrap', domain(), file]); break; }
-      catch (error) { if (attempt >= 10 || !error.message.includes(': 5:')) throw error; await pause(500); }
-    }
+  const file = plistFile(locations(home, 'darwin'));
+  if (!existsSync(file) || loaded(label)) return;
+  for (let attempt = 0; ; attempt++) {
+    try { run('/bin/launchctl', ['bootstrap', domain(), file]); break; }
+    catch (error) { if (attempt >= 10 || !error.message.includes(': 5:')) throw error; await pause(500); }
   }
 }
 
@@ -118,7 +111,6 @@ export async function install(input, home = homedir()) {
   if (process.platform !== 'darwin') throw new Error('Install on your Mac. WSL uses status, mac, open, install-helpers and skills-sync.');
   const config = validateConfig(input);
   const paths = locations(home, 'darwin');
-  const runtime = path.join(paths.directory, 'runtime');
   ssh(config, 'true\n');
   if (config.services.macLogin && !(await tcpReady(22))) {
     throw new Error('Enable Mac Remote Login in System Settings → General → Sharing, then retry.');
@@ -127,50 +119,18 @@ export async function install(input, home = homedir()) {
   await stop(home);
 
   privateWrite(paths.config, `${JSON.stringify(config, null, 2)}\n`);
-  for (const module of ['config.mjs', 'browser-service.mjs', 'browser-client.mjs', 'browser-sessions.mjs', 'browser-recordings.mjs', 'browser-results.mjs', 'browser-snapshots.mjs']) {
-    privateWrite(path.join(runtime, module), readFileSync(fileURLToPath(new URL(`./${module}`, import.meta.url))));
-  }
-  const tokenFile = path.join(runtime, 'browser-token');
-  if (config.services.browser) {
-    // Snapshot the pinned dependency so moving or deleting this checkout does not break autostart.
-    const source = path.resolve(path.dirname(fileURLToPath(import.meta.resolve('chrome-devtools-mcp'))), '../..');
-    const target = path.join(runtime, 'node_modules/chrome-devtools-mcp');
-    const version = file => existsSync(file) && JSON.parse(readFileSync(file, 'utf8')).version;
-    if (version(path.join(target, 'package.json')) !== version(path.join(source, 'package.json'))) {
-      rmSync(target, { recursive: true, force: true });
-      cpSync(source, target, { recursive: true });
-    }
-    if (!existsSync(tokenFile)) privateWrite(tokenFile, randomBytes(32).toString('hex'));
-  }
-
-  const [tunnelPlist, browserPlist] = plists(paths);
-  privateWrite(tunnelPlist, plist(label, ['/usr/bin/ssh', ...sshArgs(config)], path.join(paths.directory, 'tunnel.log')), 0o644);
-  if (config.services.browser) {
-    const { localPort, profile } = config.services.browser;
-    privateWrite(browserPlist, plist(browserLabel, [process.execPath, path.join(runtime, 'browser-service.mjs'), String(localPort), profile, tokenFile],
-      path.join(paths.directory, 'browser.log')), 0o644);
-  } else rmSync(browserPlist, { force: true });
+  privateWrite(plistFile(paths), plist(label, ['/usr/bin/ssh', ...sshArgs(config)], path.join(paths.directory, 'tunnel.log')), 0o644);
   await start(home);
 
-  // Ready when every forward listens, and the reverse forward stays loopback-only on WSL.
-  const remote = config.services.browser ? [config.services.browser.remotePort] : [];
   let ready = false;
   for (let attempt = 0; attempt < 40 && !ready; attempt++) {
     await pause(500);
-    const local = await Promise.all(['app', 'browser'].filter(name => config.services[name]).map(name => tcpReady(config.services[name].localPort)));
-    if (agentState(label) !== 'running' || !local.every(Boolean)) continue;
-    const listeners = ssh(config, 'ss -ltnH\n').split('\n').map(line => line.trim().split(/\s+/)[3]).filter(Boolean);
-    ready = remote.every(port => {
-      const bound = listeners.filter(address => address.endsWith(`:${port}`));
-      return bound.length === 1 && bound[0] === `127.0.0.1:${port}`;
-    });
+    ready = agentState(label) === 'running' && (!config.services.app || await tcpReady(config.services.app.localPort));
   }
-  if (!ready) throw new Error(`Tunnel not ready (or WSL sshd has GatewayPorts yes). See ${paths.directory}/tunnel.log.`);
+  if (!ready) throw new Error(`Tunnel not ready. See ${paths.directory}/tunnel.log.`);
 
   ssh(config, `set -eu; umask 077; cd "$HOME/.config/remote-access"
 printf %s ${shellQuote(`${JSON.stringify(config, null, 2)}\n`)} > config.json
-${config.services.browser ? `printf %s ${shellQuote(readFileSync(path.join(runtime, 'browser-client.mjs'), 'utf8'))} > browser-client.mjs
-printf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > browser-token` : ''}
 `);
   const report = status(config);
   if (report.services.macLogin === 'unavailable') throw new Error('Mac SSH from WSL failed; check Remote Login allows this account.');
@@ -179,5 +139,5 @@ printf %s ${shellQuote(readFileSync(tokenFile, 'utf8'))} > browser-token` : ''}
 
 export async function uninstall(home = homedir()) {
   await stop(home);
-  for (const file of plists(locations(home, 'darwin'))) rmSync(file, { force: true });
+  rmSync(plistFile(locations(home, 'darwin')), { force: true });
 }

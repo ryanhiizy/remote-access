@@ -8,8 +8,7 @@ Personal config, keys and logs stay outside this checkout.
 - Use Aside through Executor `aside_mac`; follow the shared `aside-browser` skill.
   Read [agent browser guidance](docs/agent-browser.md) for the remote boundary.
 - Aside runs on the Mac. Transfer WSL inputs first and copy artifacts back over SSH.
-- `remote-access status --json` diagnoses SSH and configured tunnels. Its legacy
-  browser status describes the optional Helium bridge, not Aside.
+- `remote-access status --json` diagnoses SSH and the app tunnel.
 
 WSL commands (the configured Mac Tailscale name is also its SSH host entry):
 
@@ -37,7 +36,6 @@ unattended Mac → WSL SSH, WSL `curl`/`ss`, and Unison 2.52+ for skills sync.
 | Service | Route | Requirement |
 |---|---|---|
 | app | Mac 8080 → WSL 8080 | WSL app gateway |
-| browser (optional legacy bridge) | WSL 9223 → Mac 19222 → Helium | `helium://inspect/#remote-debugging` enabled |
 | macLogin | WSL → Mac 22 over Tailscale | Mac Remote Login enabled |
 
 ```sh
@@ -58,18 +56,15 @@ using the existing skills workflow.
 
 Register a persistent stdio MCP server named `aside_mac` in each machine's
 Executor: command `~/.local/bin/aside` (expanded absolute path), args `["mcp"]`,
-`spawnPerCall: false`. The WSL command uses the pinned SSH connection. Aside does
-not depend on the legacy browser service or its port forward.
+`spawnPerCall: false`. The WSL command uses the pinned SSH connection.
 
-`install` snapshots runtime files and provisions WSL → Mac SSH with a pinned host
-key and a Tailscale-only authorized key. launchd maintains the tunnel and browser
-service. Forwards bind loopback; Mac SSH works independently of the tunnel.
-Reinstall/restart interrupts browser sessions and can require Helium approval.
+`install` provisions WSL → Mac SSH with a pinned host key and a Tailscale-only
+authorized key. launchd maintains the app tunnel, which binds loopback; Mac SSH
+works independently of the tunnel.
 
 Mac lifecycle commands: `remote-access start`, `stop`, `restart`, `logs`, `uninstall`.
 Uninstall leaves config and SSH authorization; remove the `remote-access-mac` entry
 from `~/.ssh/authorized_keys` to revoke access.
 
 Keep this bridge small: reuse upstream tools, minimize repeated tool output and
-per-call work, and keep instructions concise. Use `npm run check` and
-`node --test tests/*.test.mjs` for the adapter checks. Verify upstream internals when updating the pinned MCP dependency.
+per-call work, and keep instructions concise. Use `npm run check` and `npm test`.

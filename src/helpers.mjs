@@ -18,7 +18,7 @@ const write = (file, text, mode = 0o700) => {
   chmodSync(file, mode);
 };
 
-export function installHelpers({ home = homedir(), node = process.execPath } = {}) {
+export function installHelpers({ home = homedir() } = {}) {
   if (process.platform !== 'linux') throw new Error('Install helpers on the remote Linux machine.');
   const { directory, sshConfig, macHome, macHost } = macSetup(home);
   const bin = path.join(home, '.local/bin');
@@ -28,9 +28,10 @@ export function installHelpers({ home = homedir(), node = process.execPath } = {
     throw new Error('An Aside CLI already exists in ~/.local/bin; leave it intact or remove it before installing the proxy.');
   }
   // Snapshot the dependency-free opener so the helpers survive moving this checkout.
-  const opener = path.join(directory, 'browser-open.mjs');
-  write(opener, readFileSync(fileURLToPath(new URL('./browser-open.mjs', import.meta.url))), 0o600);
-  const invoke = `exec ${shellQuote(node)} ${shellQuote(opener)} "$@"`;
+  // Helpers run node from PATH so Node upgrades do not break them.
+  const opener = path.join(directory, 'open.mjs');
+  write(opener, readFileSync(fileURLToPath(new URL('./open.mjs', import.meta.url))), 0o600);
+  const invoke = `exec node ${shellQuote(opener)} "$@"`;
   for (const name of ['remote-access-browser', 'sensible-browser', 'www-browser']) write(path.join(bin, name), `#!/bin/sh\n${invoke}\n`);
   // Web URLs, file URLs and existing paths open on the Mac; anything else goes to the system helper.
   write(path.join(bin, 'xdg-open'), `#!/bin/sh
@@ -40,7 +41,7 @@ exec /usr/bin/xdg-open "$@"
 `);
   // Aside runs only on the Mac; the Linux CLI preserves its native commands and MCP streams.
   write(aside, readFileSync(fileURLToPath(new URL('./aside-client.mjs', import.meta.url))), 0o600);
-  write(asideShim, `#!/bin/sh\n# remote-access Aside proxy\nexec ${shellQuote(node)} ${shellQuote(aside)} "$@"\n`);
+  write(asideShim, `#!/bin/sh\n# remote-access Aside proxy\nexec node ${shellQuote(aside)} "$@"\n`);
   // UTF-8 so non-ASCII text survives the non-interactive SSH session.
   const mac = command => `#!/bin/sh\nexec /usr/bin/ssh -T -F ${shellQuote(sshConfig)} ${shellQuote(macHost)} ${shellQuote(`LANG=en_US.UTF-8 ${command}`)}\n`;
   write(path.join(bin, 'pbcopy'), mac('/usr/bin/pbcopy'));
