@@ -41,7 +41,7 @@ unattended Mac → WSL SSH, WSL `curl`/`ss`, and Unison 2.52+ for skills sync.
 # Mac
 npm ci --ignore-scripts && npm link --ignore-scripts
 remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net
-remote-access install                        # rerun after source/Node updates
+remote-access install  # rerun after source/Node updates
 # WSL
 npm link --ignore-scripts
 remote-access install-helpers
