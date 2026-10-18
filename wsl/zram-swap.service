@@ -1,0 +1,19 @@
+# Compressed swap in RAM. WSL's disk-backed swap vhdx can fail with read errors
+# that kill init (SIGBUS); set swap=0 in .wslconfig and use this instead.
+# systemd-zram-generator treats WSL as a container and does nothing, hence this unit.
+[Unit]
+Description=zram swap
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=modprobe zram
+ExecStart=zramctl --size 16G --algorithm lzo-rle /dev/zram0
+ExecStart=mkswap -L zram0 /dev/zram0
+ExecStart=swapon --priority 100 /dev/zram0
+ExecStop=swapoff /dev/zram0
+ExecStop=zramctl --reset /dev/zram0
+
+[Install]
+WantedBy=multi-user.target

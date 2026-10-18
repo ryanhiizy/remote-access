@@ -61,7 +61,22 @@ perms = 0o111
 sshargs = -F ${sshConfig}
 servercmd = /opt/homebrew/bin/unison
 `, 0o600);
-  return { browser: path.join(bin, 'remote-access-browser'), helpers: ['aside', 'xdg-open', 'sensible-browser', 'www-browser', 'pbcopy', 'pbpaste'], unison: '~/.unison/skills.prf' };
+  return { browser: path.join(bin, 'remote-access-browser'), helpers: ['aside', 'xdg-open', 'sensible-browser', 'www-browser', 'pbcopy', 'pbpaste'], unison: '~/.unison/skills.prf', zram: installZram() };
+}
+
+const zramTarget = '/etc/systemd/system/zram-swap.service';
+export const zramCommands = unit => [`install -m 0644 ${shellQuote(unit)} ${zramTarget}`, 'systemctl daemon-reload', 'systemctl enable --now zram-swap.service'];
+
+// Replaces disk swap, whose read errors crashed the WSL VM. Needs root, so print the
+// commands when sudo would prompt.
+function installZram() {
+  const unit = fileURLToPath(new URL('../wsl/zram-swap.service', import.meta.url));
+  const current = existsSync(zramTarget) && readFileSync(zramTarget, 'utf8') === readFileSync(unit, 'utf8');
+  if (current && spawnSync('systemctl', ['is-active', '--quiet', 'zram-swap.service']).status === 0) return 'active';
+  const commands = zramCommands(unit);
+  const shell = ['/bin/sh', '-c', commands.join(' && ')];
+  const result = process.getuid() === 0 ? spawnSync(shell[0], shell.slice(1)) : spawnSync('sudo', ['-n', ...shell]);
+  return result.status === 0 ? 'installed' : { run: commands.map(command => `sudo ${command}`) };
 }
 
 export function skillsSync(args, home = homedir()) {

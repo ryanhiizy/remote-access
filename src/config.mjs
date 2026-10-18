@@ -25,6 +25,7 @@ function port(value, minimum, name) {
 const hostname = /^[A-Za-z0-9][A-Za-z0-9.:_-]*$/;
 
 // host: the WSL machine's Tailscale name (or an SSH alias for it).
+// windows: optional Windows OpenSSH on the same machine, the way in when WSL is down.
 export function validateConfig(input) {
   if (input?.version !== 1 || !hostname.test(input.host ?? '')) {
     throw new Error('Use version 1 and host set to the WSL Tailscale name.');
@@ -40,7 +41,12 @@ export function validateConfig(input) {
     services.macLogin = { user: macLogin.user, address: macLogin.address };
   }
   if (!services.app && !services.macLogin) throw new Error('Enable app, macLogin or both.');
-  return { version: 1, host: input.host, services };
+  if (!input.windows) return { version: 1, host: input.host, services };
+  const windows = { host: input.windows.host ?? input.host, port: port(input.windows.port ?? 2222, 1, 'windows.port') };
+  if (!hostname.test(windows.host)) throw new Error('windows.host must be the Windows Tailscale name or an SSH alias.');
+  // Mirrored networking shares ports with WSL, whose sshd owns 22.
+  if (windows.port === 22) throw new Error('windows.port must not be 22; WSL sshd uses it.');
+  return { version: 1, host: input.host, services, windows };
 }
 
 export function defaultConfig(host, macAddress) {
@@ -50,6 +56,7 @@ export function defaultConfig(host, macAddress) {
       app: { localPort: 8080, remotePort: 8080 },
       ...(macAddress ? { macLogin: { user: userInfo().username, address: macAddress } } : {}),
     },
+    windows: {},
   });
 }
 

@@ -10,5 +10,9 @@
       "user": "you",
       "address": "your-mac.tailnet.ts.net"
     }
+  },
+  "windows": {
+    "host": "your-wsl.tailnet.ts.net",
+    "port": 2222
   }
 }
