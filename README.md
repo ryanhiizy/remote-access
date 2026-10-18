@@ -63,8 +63,8 @@ restarts WSL after updates kill it) and Windows OpenSSH on port 2222
 (disk swap read errors crash the VM) and `memory=` RAM minus 4GB, then
 `wsl --shutdown`. `install-helpers` replaces swap with 16 GB of zram (or prints
 the sudo commands). Set sleep to Never when plugged in, and stay signed in: the
-task runs at logon. Accept the host key once from the Mac with
-`ssh -p 2222 WSL.TAILNET.ts.net`; set `windows.host` in the config to an SSH alias
+task runs at logon. Then add `"windows": {}` to the Mac config and accept the host
+key once with `ssh -p 2222 WSL.TAILNET.ts.net`; set `windows.host` to an SSH alias
 if your Windows username differs.
 
 Install Aside and its CLI on the Mac. `install-helpers` provides a WSL `aside`

@@ -38,6 +38,7 @@ $i = Get-ScheduledTaskInfo -TaskName 'WSL keep-alive' -ErrorAction SilentlyConti
 if ($i) { "keep-alive: last run $($i.LastRunTime.ToString('s')), result 0x$($i.LastTaskResult.ToString('X'))" } else { 'keep-alive: task missing; run windows/setup.ps1' }
 $env:WSL_UTF8 = '1'
 wsl.exe -l -v | Where-Object { $_.Trim() }
+Enable-ScheduledTask -TaskName 'WSL keep-alive' | Out-Null
 Start-ScheduledTask -TaskName 'WSL keep-alive'
 `;
 
@@ -158,10 +159,13 @@ printf %s ${shellQuote(`${JSON.stringify(config, null, 2)}\n`)} > config.json
 
 export async function recover(config, timeout = 120000) {
   if (!config.windows) throw new Error('Add "windows": {} to the config and run windows/setup.ps1 first.');
-  let report;
-  try { report = run('/usr/bin/ssh', windowsSshArgs(config, powershell(recoverScript)), { timeout: 60000 }); }
-  catch (error) { throw new Error(`Windows SSH unreachable (${error.message}); the laptop is off, asleep or offline.`); }
-  console.log(report.trim());
+  const result = spawnSync('/usr/bin/ssh', windowsSshArgs(config, powershell(recoverScript)), { encoding: 'utf8', timeout: 60000 });
+  // ssh exits 255 for its own failures; any other nonzero status is the script's.
+  if (result.error || result.status === 255) {
+    throw new Error(`Windows SSH unreachable (${result.error?.message ?? result.stderr.trim()}); the laptop is off, asleep or offline.`);
+  }
+  if (result.stdout.trim()) console.log(result.stdout.trim());
+  if (result.status !== 0) throw new Error(`Recover script failed on Windows: ${result.stderr.trim() || `exit ${result.status}`}`);
   const started = Date.now();
   for (;;) {
     try { ssh(config, 'true\n'); break; }

@@ -11,7 +11,8 @@ test('windows defaults to the WSL host on port 2222 and stays optional', () => {
   assert.deepEqual(validateConfig({ ...base, windows: {} }).windows, { host: 'laptop.ts.net', port: 2222 });
   assert.deepEqual(validateConfig({ ...base, windows: { host: 'laptop-win', port: 2200 } }).windows, { host: 'laptop-win', port: 2200 });
   assert.equal('windows' in validateConfig(base), false);
-  assert.deepEqual(defaultConfig('laptop.ts.net').windows, { host: 'laptop.ts.net', port: 2222 });
+  // Opt-in, so status does not fail for anyone without Windows SSH.
+  assert.equal('windows' in defaultConfig('laptop.ts.net'), false);
 });
 
 test('windows rejects port 22, which WSL sshd owns, and unsafe hosts', () => {
@@ -24,7 +25,8 @@ test('recover runs an encoded PowerShell script against the Windows port', () =>
   const encoded = command.split(' ').at(-1);
   assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), recoverScript);
   assert.match(recoverScript, /Temp\\wsl-crashes/);
-  assert.match(recoverScript, /Start-ScheduledTask -TaskName 'WSL keep-alive'/);
+  // A disabled task makes Start-ScheduledTask fail, so enable it first.
+  assert.match(recoverScript, /Enable-ScheduledTask -TaskName 'WSL keep-alive' \| Out-Null\nStart-ScheduledTask -TaskName 'WSL keep-alive'/);
   const args = windowsSshArgs(validateConfig({ ...base, windows: {} }), command);
   assert.deepEqual(args.slice(-4), ['-p', '2222', 'laptop.ts.net', command]);
   assert.ok(args.includes('BatchMode=yes'));

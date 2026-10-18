@@ -56,7 +56,6 @@ export function defaultConfig(host, macAddress) {
       app: { localPort: 8080, remotePort: 8080 },
       ...(macAddress ? { macLogin: { user: userInfo().username, address: macAddress } } : {}),
     },
-    windows: {},
   });
 }
 
