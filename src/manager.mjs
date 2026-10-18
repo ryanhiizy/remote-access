@@ -25,6 +25,23 @@ export function privateWrite(file, text, mode = 0o600) {
 const ssh = (config, script) => run('/usr/bin/ssh', ['-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
   '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10', config.host, '/bin/sh -s'], { input: script });
 
+// Windows OpenSSH runs commands in Windows PowerShell; -EncodedCommand avoids nested quoting.
+export const powershell = script => `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
+export const windowsSshArgs = (config, command) => ['-T', '-o', 'BatchMode=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+  '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10', '-p', String(config.windows.port), config.windows.host, command];
+const windowsReachable = config => spawnSync('/usr/bin/ssh', windowsSshArgs(config, 'exit'), { stdio: 'ignore', timeout: 20000 }).status === 0;
+
+// Last crash dump, keep-alive state and distro states, then restart the keep-alive task.
+export const recoverScript = `$f = Get-ChildItem "$env:LOCALAPPDATA\\Temp\\wsl-crashes" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+if ($f) { "last crash: $($f.Name) $($f.LastWriteTime.ToString('s'))" } else { 'last crash: none' }
+$i = Get-ScheduledTaskInfo -TaskName 'WSL keep-alive' -ErrorAction SilentlyContinue
+if ($i) { "keep-alive: last run $($i.LastRunTime.ToString('s')), result 0x$($i.LastTaskResult.ToString('X'))" } else { 'keep-alive: task missing; run windows/setup.ps1' }
+$env:WSL_UTF8 = '1'
+wsl.exe -l -v | Where-Object { $_.Trim() }
+Enable-ScheduledTask -TaskName 'WSL keep-alive' | Out-Null
+Start-ScheduledTask -TaskName 'WSL keep-alive'
+`;
+
 const tcpReady = (port, timeout = 2000) => new Promise(resolve => {
   const socket = createConnection({ host: '127.0.0.1', port });
   const finish = ready => { socket.destroy(); resolve(ready); };
@@ -51,6 +68,8 @@ const agentState = name => {
 export function status(config, platform = process.platform) {
   const result = { side: platform === 'darwin' ? 'mac' : 'wsl', host: config.host, services: {} };
   if (platform === 'darwin') result.agents = { tunnel: agentState(label) };
+  // Separates "Windows down" (laptop off or offline) from "WSL down" (recover).
+  if (platform === 'darwin' && config.windows) result.windows = windowsReachable(config) ? 'ready' : 'unavailable';
   try {
     const output = platform === 'darwin' ? ssh(config, probeScript(config)) : run('/bin/sh', ['-s'], { input: probeScript(config) });
     for (const line of output.trim().split('\n')) { const [name, state] = line.split(' '); result.services[name] = state; }
@@ -136,6 +155,23 @@ printf %s ${shellQuote(`${JSON.stringify(config, null, 2)}\n`)} > config.json
   const report = status(config);
   if (report.services.macLogin === 'unavailable') throw new Error('Mac SSH from WSL failed; check Remote Login allows this account.');
   return report;
+}
+
+export async function recover(config, timeout = 120000) {
+  if (!config.windows) throw new Error('Add "windows": {} to the config and run windows/setup.ps1 first.');
+  const result = spawnSync('/usr/bin/ssh', windowsSshArgs(config, powershell(recoverScript)), { encoding: 'utf8', timeout: 60000 });
+  // ssh exits 255 for its own failures; any other nonzero status is the script's.
+  if (result.error || result.status === 255) {
+    throw new Error(`Windows SSH unreachable (${result.error?.message ?? result.stderr.trim()}); the laptop is off, asleep or offline.`);
+  }
+  if (result.stdout.trim()) console.log(result.stdout.trim());
+  if (result.status !== 0) throw new Error(`Recover script failed on Windows: ${result.stderr.trim() || `exit ${result.status}`}`);
+  const started = Date.now();
+  for (;;) {
+    try { ssh(config, 'true\n'); break; }
+    catch { if (Date.now() - started > timeout) throw new Error(`WSL SSH still down after ${timeout / 1000}s.`); await pause(3000); }
+  }
+  console.log(`WSL SSH: ready after ${Math.round((Date.now() - started) / 1000)}s`);
 }
 
 export async function uninstall(home = homedir()) {

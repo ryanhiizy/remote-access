@@ -3,13 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { defaultConfig, locations, shellQuote, validateConfig } from '../src/config.mjs';
-import { install, privateWrite, start, status, stop, uninstall } from '../src/manager.mjs';
+import { install, privateWrite, recover, start, status, stop, uninstall } from '../src/manager.mjs';
 import { openOnMac } from '../src/open.mjs';
 import { gcloudLogin, installHelpers, skillsSync } from '../src/helpers.mjs';
 
 const help = `Usage: remote-access <command>
 
-Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall
+Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall | recover
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
 Both: status [--json]   (nonzero when a service is unavailable)
 `;
@@ -41,13 +41,15 @@ export async function main([command, ...rest] = process.argv.slice(2)) {
       const log = `${paths.directory}/tunnel.log`;
       if (existsSync(log)) console.log(readFileSync(log, 'utf8').trimEnd().split('\n').slice(-30).join('\n'));
       return;
+    case 'recover': only(true, command); return recover(readConfig());
     case 'status': {
       const report = status(readConfig());
+      const down = report.windows === 'ready' ? 'WSL down, Windows up: run remote-access recover' : 'Windows unreachable too: laptop off, asleep or offline';
       if (rest.includes('--json')) console.log(JSON.stringify(report, null, 2));
-      else console.log([`${report.side} → ${report.host}`, ...Object.entries({ ...report.agents, ...report.services }).filter(([, state]) => state)
-        .map(([name, state]) => `  ${name}: ${state}`), report.error && `  error: ${report.error}`].filter(Boolean).join('\n'));
+      else console.log([`${report.side} → ${report.host}`, ...Object.entries({ ...report.agents, ...report.services, windows: report.windows }).filter(([, state]) => state)
+        .map(([name, state]) => `  ${name}: ${state}`), report.error && `  error: ${report.error}`, report.error && report.windows && `  ${down}`].filter(Boolean).join('\n'));
       const bad = Object.values(report.services).some(state => !['ready', 'available'].includes(state))
-        || Object.values(report.agents ?? {}).some(state => state && state !== 'running');
+        || Object.values(report.agents ?? {}).some(state => state && state !== 'running') || report.windows === 'unavailable';
       if (bad) process.exitCode = 1;
       return;
     }

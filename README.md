@@ -48,6 +48,25 @@ remote-access install-helpers
 export BROWSER="$HOME/.local/bin/remote-access-browser"  # persist in shell profile
 ```
 
+### Windows
+
+Run on the laptop, in Administrator PowerShell as the user who owns the distro:
+
+```powershell
+.\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu]
+```
+
+It adds a hidden `WSL keep-alive` task (at logon, and every 5 minutes so it
+restarts WSL after updates kill it) and Windows OpenSSH on port 2222
+(keys only, Tailscale only; never 22, which WSL's sshd owns). In
+`%USERPROFILE%\.wslconfig` under `[wsl2]` set `networkingMode=mirrored`, `swap=0`
+(disk swap read errors crash the VM) and `memory=` RAM minus 4GB, then
+`wsl --shutdown`. `install-helpers` replaces swap with 16 GB of zram (or prints
+the sudo commands). Set sleep to Never when plugged in, and stay signed in: the
+task runs at logon. Then add `"windows": {}` to the Mac config and accept the host
+key once with `ssh -p 2222 WSL.TAILNET.ts.net`; set `windows.host` to an SSH alias
+if your Windows username differs.
+
 Install Aside and its CLI on the Mac. `install-helpers` provides a WSL `aside`
 proxy; do not install a second native Aside CLI on WSL. Keep the vendor skill in
 `~/.agents/skills/aside-browser`, with Claude's entry symlinked there, and sync it
@@ -62,6 +81,9 @@ authorized key. launchd maintains the app tunnel, which binds loopback; Mac SSH
 works independently of the tunnel.
 
 Mac lifecycle commands: `remote-access start`, `stop`, `restart`, `logs`, `uninstall`.
+`status` also checks Windows SSH, so "WSL down" and "laptop down" differ. `recover`
+shows the last WSL crash dump, keep-alive state and distros over Windows SSH,
+restarts the keep-alive task and waits for WSL SSH.
 Uninstall leaves config and SSH authorization; remove the `remote-access-mac` entry
 from `~/.ssh/authorized_keys` to revoke access.
 
