@@ -20,7 +20,8 @@ $port = 2222  # Never 22: under mirrored networking WSL's sshd owns that port.
 # process open keeps the distro up. RestartCount only covers launch failures, so a
 # 5-minute repeat (ignored while running) restarts it after something kills WSL,
 # such as Restart Manager during an Office update.
-$user = "$env:USERDOMAIN\$env:USERNAME"
+# $env:USERDOMAIN reads WORKGROUP over SSH, which does not resolve to the account.
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless wsl.exe -d $Distro --exec /bin/sleep infinity"
 $trigger = @(
   New-ScheduledTaskTrigger -AtLogOn -User $user
