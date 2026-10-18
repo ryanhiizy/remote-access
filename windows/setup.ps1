@@ -17,13 +17,18 @@ if ($key -notmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+) [A-Za-z0-9+/=]+( 
 $port = 2222  # Never 22: under mirrored networking WSL's sshd owns that port.
 
 # WSL stops idle distros, taking WSL's sshd with them. A hidden console holding a
-# process open keeps the distro up; the task restarts it if WSL dies.
+# process open keeps the distro up. RestartCount only covers launch failures, so a
+# 5-minute repeat (ignored while running) restarts it after something kills WSL,
+# such as Restart Manager during an Office update.
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless wsl.exe -d $Distro --exec /bin/sleep infinity"
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$trigger = @(
+  New-ScheduledTaskTrigger -AtLogOn -User $user
+  New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
+)
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
-  -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+  -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
 Register-ScheduledTask -TaskName 'WSL keep-alive' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
 # OpenSSH Server.

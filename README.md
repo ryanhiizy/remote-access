@@ -56,7 +56,8 @@ Run on the laptop, in Administrator PowerShell as the user who owns the distro:
 .\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu]
 ```
 
-It adds a hidden `WSL keep-alive` logon task and Windows OpenSSH on port 2222
+It adds a hidden `WSL keep-alive` task (at logon, and every 5 minutes so it
+restarts WSL after updates kill it) and Windows OpenSSH on port 2222
 (keys only, Tailscale only; never 22, which WSL's sshd owns). In
 `%USERPROFILE%\.wslconfig` under `[wsl2]` set `networkingMode=mirrored`, `swap=0`
 (disk swap read errors crash the VM) and `memory=` RAM minus 4GB, then
