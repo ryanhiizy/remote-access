@@ -1,91 +1,117 @@
 # remote-access
 
-Mac ↔ WSL over Tailscale: Aside access, app tunnel, shell, clipboard and files.
+Mac ↔ WSL over Tailscale: Aside access, app tunnel, shell, clipboard and files,
+plus a Windows way in when WSL is down.
+
+| Service | Route | Needs |
+|---|---|---|
+| app | Mac 8080 → WSL 8080 | WSL app gateway |
+| macLogin | WSL → Mac 22 | Mac Remote Login |
+| windows (optional) | Mac → Windows 2222 | `windows/setup.ps1` |
 
 ## Agent workflow
 
-- Use Aside through Executor `aside_mac`; follow the shared `aside-browser` skill.
-  Read [agent browser guidance](docs/agent-browser.md) for the remote boundary.
-- Aside runs on the Mac. Transfer WSL inputs first and copy artifacts back over SSH.
-- `remote-access status --json` diagnoses SSH and the app tunnel.
+- Use Aside through Executor `aside_mac` and follow the shared `aside-browser` skill;
+  see [agent browser guidance](docs/agent-browser.md) for the remote boundary.
+- Aside runs on the Mac: copy WSL inputs over first, and artifacts back over SSH.
+- Diagnose with `remote-access status --json`.
 
-WSL commands (the configured Mac Tailscale name is also its SSH host entry):
+## Commands
 
-```sh
-aside guide                                   # Mac CLI over SSH
-remote-access mac -- COMMAND                  # omit COMMAND for a shell
-scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC_TAILSCALE_NAME:PATH
-remote-access open URL_OR_PATH                # also xdg-open
-printf hi | pbcopy; pbpaste
-remote-access skills-sync [--prefer mac|wsl]
-remote-access gcloud-login                    # login + ADC; approve on Mac
-```
+**WSL** (the Mac's Tailscale name is also its SSH host entry):
 
-`open` dispatches URLs to Aside without waiting for load; files/folders are copied to
-`~/Downloads/WSL` and opened. Edits do not sync back. Only the app port is forwarded;
-other OAuth callback ports need no-browser/device login. Skills sync uses Unison;
-conflicts are skipped unless `--prefer` is supplied. Shared skills belong in
-`~/.agents/skills`, linked from agent directories; use `~` in portable skill paths.
+| Command | Does |
+|---|---|
+| `aside guide` | Mac Aside CLI over SSH |
+| `remote-access mac [-- COMMAND]` | Mac shell, or one command |
+| `scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC:PATH` | copy to the Mac |
+| `remote-access open URL_OR_PATH` | URL → Aside; file → `~/Downloads/WSL` and opened (also `xdg-open`) |
+| `pbcopy` / `pbpaste` | Mac clipboard |
+| `remote-access skills-sync [--prefer mac\|wsl]` | Unison sync of `~/.agents/skills` |
+| `remote-access gcloud-login` | gcloud login + ADC, approved on the Mac |
+
+**Mac:**
+
+| Command | Does |
+|---|---|
+| `remote-access status [--json]` | checks every service; exits nonzero if one is down |
+| `remote-access recover` | over Windows SSH: last crash, keep-alive state, restarts WSL |
+| `remote-access start` / `stop` / `restart` / `logs` | app tunnel (launchd) |
+| `remote-access uninstall` | removes the tunnel; keeps config and SSH keys |
+
+Behaviour worth knowing:
+
+- `open` doesn't wait for pages to load, and edits to opened files don't sync back.
+- Only the app port is forwarded. Other OAuth callbacks need a no-browser or device login.
+- `skills-sync` skips conflicts unless you pass `--prefer`. Link agent skill directories
+  to `~/.agents/skills`, and use `~` in portable skill paths.
 
 ## Setup
 
-Requires Tailscale on both machines, WSL mirrored networking, Node 22.12+,
-unattended Mac → WSL SSH, WSL `curl`/`ss`, and Unison 2.52+ for skills sync.
+Needs Tailscale on both machines, Node 22.12+, and Unison 2.52+ for skills sync.
 
-| Service | Route | Requirement |
-|---|---|---|
-| app | Mac 8080 → WSL 8080 | WSL app gateway |
-| macLogin | WSL → Mac 22 over Tailscale | Mac Remote Login enabled |
+### 1. Windows (Administrator PowerShell)
 
-```sh
-# Mac
-npm ci --ignore-scripts && npm link --ignore-scripts
-remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net
-remote-access install  # rerun after source/Node updates
-# WSL
-npm link --ignore-scripts
-remote-access install-helpers
-export BROWSER="$HOME/.local/bin/remote-access-browser"  # persist in shell profile
-```
+1. Power: sleep **Never** when plugged in; lid close **Do nothing**. Stay signed in,
+   because the keep-alive task starts at logon.
+2. `%USERPROFILE%\.wslconfig`:
+   ```ini
+   [wsl2]
+   memory=<RAM minus 4>GB
+   swap=0                    # disk swap read errors crash the VM; zram replaces it
+   networkingMode=mirrored
+   ```
+3. Run setup. It adds a hidden `WSL keep-alive` task (at logon and every 5 minutes)
+   and Windows OpenSSH on 2222 (keys only, Tailscale only; never 22, which WSL's sshd owns):
+   ```powershell
+   .\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu]
+   wsl --shutdown
+   ```
 
-### Windows
+### 2. WSL
 
-Run on the laptop, in Administrator PowerShell as the user who owns the distro:
+1. Enable systemd (`[boot] systemd=true` in `/etc/wsl.conf`), install `openssh-server`,
+   `curl` and `iproute2`, and allow key logins only.
+2. Install the helpers (they also install 16 GB of zram swap, or print the sudo commands):
+   ```sh
+   npm link --ignore-scripts
+   remote-access install-helpers
+   export BROWSER="$HOME/.local/bin/remote-access-browser"  # add to your shell profile
+   ```
 
-```powershell
-.\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu]
-```
+### 3. Mac
 
-It adds a hidden `WSL keep-alive` task (at logon, and every 5 minutes so it
-restarts WSL after updates kill it) and Windows OpenSSH on port 2222
-(keys only, Tailscale only; never 22, which WSL's sshd owns). In
-`%USERPROFILE%\.wslconfig` under `[wsl2]` set `networkingMode=mirrored`, `swap=0`
-(disk swap read errors crash the VM) and `memory=` RAM minus 4GB, then
-`wsl --shutdown`. `install-helpers` replaces swap with 16 GB of zram (or prints
-the sudo commands). Set sleep to Never when plugged in, and stay signed in: the
-task runs at logon. Then add `"windows": {}` to the Mac config and accept the host
-key once with `ssh -p 2222 WSL.TAILNET.ts.net`; set `windows.host` to an SSH alias
-if your Windows username differs.
+1. Turn on Remote Login, and "Allow full disk access for remote users" in its ⓘ panel.
+2. Set up key-based SSH to WSL: a key, a `~/.ssh/config` host entry, and the key in
+   WSL's `~/.ssh/authorized_keys`. `ssh WSL true` must work without a prompt.
+3. Install Aside and its CLI. Don't install a second native Aside CLI on WSL;
+   `install-helpers` provides a proxy.
+4. Install and connect:
+   ```sh
+   npm ci --ignore-scripts && npm link --ignore-scripts
+   remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net
+   remote-access install  # rerun after source or Node updates
+   ```
+   `install` gives WSL → Mac SSH a pinned host key and a Tailscale-only key.
+   launchd keeps the app tunnel up, bound to loopback.
+5. Optional, for `recover`: add `"windows": {}` to the config, then accept the host
+   key once with `ssh -p 2222 WSL.TAILNET.ts.net`. If your Windows username differs
+   from your Mac one, set `"windows": {"host": "SSH_ALIAS"}`.
 
-Install Aside and its CLI on the Mac. `install-helpers` provides a WSL `aside`
-proxy; do not install a second native Aside CLI on WSL. Keep the vendor skill in
-`~/.agents/skills/aside-browser`, with Claude's entry symlinked there, and sync it
-using the existing skills workflow.
+### 4. Executor (both machines)
 
-Register a persistent stdio MCP server named `aside_mac` in each machine's
-Executor: command `~/.local/bin/aside` (expanded absolute path), args `["mcp"]`,
-`spawnPerCall: false`. The WSL command uses the pinned SSH connection.
+Add a persistent stdio MCP server `aside_mac`: command is the absolute path of
+`~/.local/bin/aside`, args `["mcp"]`, `spawnPerCall: false`.
 
-`install` provisions WSL → Mac SSH with a pinned host key and a Tailscale-only
-authorized key. launchd maintains the app tunnel, which binds loopback; Mac SSH
-works independently of the tunnel.
+Keep the vendor skill in `~/.agents/skills/aside-browser`, with Claude's entry
+symlinked to it, and sync it with `skills-sync`.
 
-Mac lifecycle commands: `remote-access start`, `stop`, `restart`, `logs`, `uninstall`.
-`status` also checks Windows SSH, so "WSL down" and "laptop down" differ. `recover`
-shows the last WSL crash dump, keep-alive state and distros over Windows SSH,
-restarts the keep-alive task and waits for WSL SSH.
-Uninstall leaves config and SSH authorization; remove the `remote-access-mac` entry
-from `~/.ssh/authorized_keys` to revoke access.
+## Revoking access
 
-Keep this bridge small: reuse upstream tools, minimize repeated tool output and
-per-call work, and keep instructions concise. Use `npm run check` and `npm test`.
+Run `remote-access uninstall`, then remove the `remote-access-mac` line from the
+Mac's `~/.ssh/authorized_keys`.
+
+## Development
+
+Keep the bridge small: reuse upstream tools, and keep tool output and per-call work
+minimal. Run `npm run check` and `npm test`.
