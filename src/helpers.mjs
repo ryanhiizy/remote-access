@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +9,26 @@ function macSetup(home) {
   const paths = locations(home, 'linux');
   const config = validateConfig(JSON.parse(readFileSync(paths.config, 'utf8')));
   if (!config.services?.macLogin || !existsSync(paths.sshConfig)) throw new Error('Install on the Mac with macLogin enabled first.');
-  return { ...paths, macHost: config.services.macLogin.address, macHome: `/Users/${config.services.macLogin.user}` };
+  return { ...paths, macHost: config.services.macLogin.address, macUser: config.services.macLogin.user, macHome: `/Users/${config.services.macLogin.user}` };
 }
+
+// Aside runs only on the Mac. The proxy re-quotes each argument for the Mac's shell
+// without a subshell, so code, empty arguments and trailing newlines arrive intact,
+// then execs ssh so no wrapper process stays resident beside the MCP stream.
+export const asideProxy = (sshConfig, macHost, macUser) => `#!/bin/sh
+# remote-access Aside proxy
+command="exec ${shellQuote(`/Users/${macUser}/.local/bin/aside`)}"
+q="'"
+for arg do
+  quoted=
+  while case $arg in *"$q"*) true ;; *) false ;; esac; do
+    quoted="$quoted\${arg%%"$q"*}$q\\\\$q$q"
+    arg=\${arg#*"$q"}
+  done
+  command="$command $q$quoted$arg$q"
+done
+exec /usr/bin/ssh -T -F ${shellQuote(sshConfig)} -o ServerAliveInterval=15 -o ServerAliveCountMax=3 ${shellQuote(macHost)} "$command"
+`;
 
 const write = (file, text, mode = 0o700) => {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -20,9 +38,8 @@ const write = (file, text, mode = 0o700) => {
 
 export function installHelpers({ home = homedir() } = {}) {
   if (process.platform !== 'linux') throw new Error('Install helpers on the remote Linux machine.');
-  const { directory, sshConfig, macHome, macHost } = macSetup(home);
+  const { directory, sshConfig, macHome, macHost, macUser } = macSetup(home);
   const bin = path.join(home, '.local/bin');
-  const aside = path.join(directory, 'aside-client.mjs');
   const asideShim = path.join(bin, 'aside');
   if (existsSync(asideShim) && !readFileSync(asideShim, 'utf8').includes('remote-access Aside proxy')) {
     throw new Error('An Aside CLI already exists in ~/.local/bin; leave it intact or remove it before installing the proxy.');
@@ -39,9 +56,9 @@ case "$1" in http://*|https://*|file://*) ${invoke} ;; esac
 if [ "$#" -eq 1 ] && [ -e "$1" ]; then ${invoke}; fi
 exec /usr/bin/xdg-open "$@"
 `);
-  // Aside runs only on the Mac; the Linux CLI preserves its native commands and MCP streams.
-  write(aside, readFileSync(fileURLToPath(new URL('./aside-client.mjs', import.meta.url))), 0o600);
-  write(asideShim, `#!/bin/sh\n# remote-access Aside proxy\nexec node ${shellQuote(aside)} "$@"\n`);
+  write(asideShim, asideProxy(sshConfig, macHost, macUser));
+  // Earlier installs ran the proxy through a resident Node snapshot.
+  rmSync(path.join(directory, 'aside-client.mjs'), { force: true });
   // UTF-8 so non-ASCII text survives the non-interactive SSH session.
   const mac = command => `#!/bin/sh\nexec /usr/bin/ssh -T -F ${shellQuote(sshConfig)} ${shellQuote(macHost)} ${shellQuote(`LANG=en_US.UTF-8 ${command}`)}\n`;
   write(path.join(bin, 'pbcopy'), mac('/usr/bin/pbcopy'));
