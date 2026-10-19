@@ -1,0 +1,16 @@
+[package]
+name = "remote-access"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
