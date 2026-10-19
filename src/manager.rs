@@ -217,7 +217,7 @@ fn authorize(existing: &[u8], key: &str) -> Vec<u8> {
     let mut text: Vec<u8> = existing
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty() && !line.windows(key.len()).any(|window| window == key.as_bytes()))
-        .flat_map(|line| line.iter().copied().chain([b'\n']))
+        .flat_map(|line| line.iter().copied().chain(*b"\n"))
         .collect();
     let options = "from=\"100.64.0.0/10\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding";
     text.extend(format!("{options} {key} remote-access-mac\n").as_bytes());
