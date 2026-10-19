@@ -48,7 +48,7 @@ Behaviour worth knowing:
 
 ## Setup
 
-Needs Tailscale on both machines, Node 22.12+, and Unison 2.52+ for skills sync.
+Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
 
 ### 1. Windows (Administrator PowerShell)
 
@@ -74,7 +74,7 @@ Needs Tailscale on both machines, Node 22.12+, and Unison 2.52+ for skills sync.
    `curl` and `iproute2`, and allow key logins only.
 2. Install the helpers (they also install 16 GB of zram swap, or print the sudo commands):
    ```sh
-   npm link --ignore-scripts
+   cargo install --locked --path . --root ~/.local
    remote-access install-helpers
    export BROWSER="$HOME/.local/bin/remote-access-browser"  # add to your shell profile
    ```
@@ -88,9 +88,9 @@ Needs Tailscale on both machines, Node 22.12+, and Unison 2.52+ for skills sync.
    `install-helpers` provides a proxy.
 4. Install and connect:
    ```sh
-   npm ci --ignore-scripts && npm link --ignore-scripts
+   cargo install --locked --path . --root ~/.local  # needs ~/.local/bin on PATH
    remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net
-   remote-access install  # rerun after source or Node updates
+   remote-access install  # rerun after source updates
    ```
    `install` gives WSL → Mac SSH a pinned host key and a Tailscale-only key.
    launchd keeps the app tunnel up, bound to loopback.
@@ -113,5 +113,9 @@ Mac's `~/.ssh/authorized_keys`.
 
 ## Development
 
-Keep the bridge small: reuse upstream tools, and keep tool output and per-call work
-minimal. Run `npm run check` and `npm test`.
+Used by agents: keep output short and parseable, and errors actionable. Reuse upstream
+tools; nothing of ours stays resident. Only dependency: `serde_json`. Run `cargo fmt`,
+`cargo clippy --all-targets` and `cargo test` (CI runs them on Linux and macOS).
+
+From the Node version: `npm rm -g mac-wsl-remote-access`, install as above, then rerun
+`remote-access install-helpers` on WSL.
