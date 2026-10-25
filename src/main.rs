@@ -1,3 +1,4 @@
+mod claude_login;
 mod config;
 mod helpers;
 mod manager;
@@ -19,7 +20,7 @@ const HELP: &str = "Usage: remote-access <command>
 
 Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall | recover
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
-Both: status [--json]   (nonzero when a service is unavailable)
+Both: claude-login [--email EMAIL] | status [--json]   (nonzero when a service is unavailable)
 ";
 
 fn only(wanted_mac: bool, command: &str) -> Res<()> {
@@ -133,6 +134,11 @@ fn main_with(args: &[String]) -> Res<i32> {
         "skills-sync" => {
             only(false, command)?;
             return helpers::skills_sync(&home, rest);
+        }
+        "claude-login" => {
+            let found = options(rest, &["email"])?;
+            let email = found.iter().rev().find(|(name, _)| *name == "email").map(|(_, value)| *value);
+            return claude_login::login(&home, email);
         }
         "gcloud-login" => {
             only(false, command)?;
