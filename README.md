@@ -39,7 +39,6 @@ plus a Windows way in when WSL is down.
 | `remote-access recover` | over Windows SSH: last crash, keep-alive state, restarts WSL |
 | `remote-access start` / `stop` / `restart` / `logs` | app tunnel (launchd) |
 | `remote-access uninstall` | removes the tunnel; keeps config and SSH keys |
-| `remote-access claude-login [--email EMAIL]` | starts Claude Code login on the configured WSL host over SSH |
 
 Behaviour worth knowing:
 
