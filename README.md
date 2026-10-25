@@ -29,6 +29,7 @@ plus a Windows way in when WSL is down.
 | `pbcopy` / `pbpaste` | Mac clipboard |
 | `remote-access skills-sync [--prefer mac\|wsl]` | Unison sync of `~/.agents/skills` |
 | `remote-access gcloud-login` | gcloud login + ADC, approved on the Mac |
+| `remote-access claude-login [--email EMAIL]` | Claude Code login on WSL, approved in the Mac browser |
 
 **Mac:**
 
@@ -38,6 +39,7 @@ plus a Windows way in when WSL is down.
 | `remote-access recover` | over Windows SSH: last crash, keep-alive state, restarts WSL |
 | `remote-access start` / `stop` / `restart` / `logs` | app tunnel (launchd) |
 | `remote-access uninstall` | removes the tunnel; keeps config and SSH keys |
+| `remote-access claude-login [--email EMAIL]` | starts Claude Code login on the configured WSL host over SSH |
 
 Behaviour worth knowing:
 
@@ -45,6 +47,24 @@ Behaviour worth knowing:
 - Only the app port is forwarded. Other OAuth callbacks need a no-browser or device login.
 - `skills-sync` skips conflicts unless you pass `--prefer`. Link agent skill directories
   to `~/.agents/skills`, and use `~` in portable skill paths.
+
+### Claude Code login
+
+With Claude Code installed on WSL and SSH configured, run from either machine:
+
+```sh
+remote-access claude-login --email you@example.com
+```
+
+The command opens the sign-in page in your Mac browser. Approve the account, then
+paste the returned code into the same terminal. `--email` is optional and
+pre-fills the login email. From WSL, opening the Mac browser also requires the
+`macLogin` setup below.
+
+The login uses Claude's hosted code callback, so no localhost callback port needs
+forwarding. If the browser cannot open automatically, use the URL printed in the
+terminal. This signs Claude Code into your Claude subscription on WSL; it does
+not switch the Mac desktop app's account.
 
 ## Setup
 
