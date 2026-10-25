@@ -48,24 +48,6 @@ Behaviour worth knowing:
 - `skills-sync` skips conflicts unless you pass `--prefer`. Link agent skill directories
   to `~/.agents/skills`, and use `~` in portable skill paths.
 
-### Claude Code login
-
-With Claude Code installed on WSL and SSH configured, run from either machine:
-
-```sh
-remote-access claude-login --email you@example.com
-```
-
-The command opens the sign-in page in your Mac browser. Approve the account, then
-paste the returned code into the same terminal. `--email` is optional and
-pre-fills the login email. From WSL, opening the Mac browser also requires the
-`macLogin` setup below.
-
-The login uses Claude's hosted code callback, so no localhost callback port needs
-forwarding. If the browser cannot open automatically, use the URL printed in the
-terminal. This signs Claude Code into your Claude subscription on WSL; it does
-not switch the Mac desktop app's account.
-
 ## Setup
 
 Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
