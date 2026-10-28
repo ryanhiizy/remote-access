@@ -14,7 +14,8 @@ plus a Windows way in when WSL is down.
 - Use Aside through Executor `aside_mac` and follow the shared `aside-browser` skill;
   see [agent browser guidance](docs/agent-browser.md) for the remote boundary.
 - Aside runs on the Mac: copy WSL inputs over first, and artifacts back over SSH.
-- Diagnose with `remote-access status --json`.
+- Diagnose with `remote-access status --json`. `install` and `install-helpers` add the
+  [`remote-access` skill](skills/remote-access/SKILL.md) to `~/.agents/skills`.
 
 ## Commands
 
@@ -35,15 +36,20 @@ plus a Windows way in when WSL is down.
 
 | Command | Does |
 |---|---|
-| `remote-access status [--json]` | checks every service; exits nonzero if one is down |
-| `remote-access recover` | over Windows SSH: last crash, keep-alive state, restarts WSL |
+| `remote-access status [--json]` | checks every service, plus Windows crash report; exits nonzero if one is down |
+| `remote-access recover` | over Windows SSH: crash report, keep-alive state, restarts WSL |
+| `remote-access forward PORT [LOCAL_PORT]` | Mac `127.0.0.1:LOCAL_PORT` → WSL `localhost:PORT` until Ctrl-C |
 | `remote-access start` / `stop` / `restart` / `logs` | app tunnel (launchd) |
 | `remote-access uninstall` | removes the tunnel; keeps config and SSH keys |
 
 Behaviour worth knowing:
 
 - `open` doesn't wait for pages to load, and edits to opened files don't sync back.
-- Only the app port is forwarded. Other OAuth callbacks need a no-browser or device login.
+- Only the app port is forwarded permanently; use `forward` for others. OAuth callbacks
+  need a no-browser or device login.
+- The crash report reads the Windows System log for 7 days: last bugcheck (1001),
+  unexpected shutdowns (41, 6008), restarts (1074, with process and reason), last boot
+  and GPU drivers.
 - `skills-sync` skips conflicts unless you pass `--prefer`. Link agent skill directories
   to `~/.agents/skills`, and use `~` in portable skill paths.
 
@@ -54,7 +60,7 @@ Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
 ### 1. Windows (Administrator PowerShell)
 
 1. Power: sleep **Never** when plugged in; lid close **Do nothing**. Stay signed in,
-   because the keep-alive task starts at logon.
+   because the keep-alive task starts at logon (step 4 covers reboots).
 2. `%USERPROFILE%\.wslconfig`:
    ```ini
    [wsl2]
@@ -65,9 +71,16 @@ Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
 3. Run setup. It adds a hidden `WSL keep-alive` task (at logon and every 5 minutes)
    and Windows OpenSSH on 2222 (keys only, Tailscale only; never 22, which WSL's sshd owns):
    ```powershell
-   .\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu]
+   .\windows\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'  # [-Distro Ubuntu] [-LockAtLogon]
    wsl --shutdown
    ```
+4. Optional, auto sign-in: update restarts and crash reboots then reach the desktop, and
+   start keep-alive, with nobody present. `winget install Microsoft.Sysinternals.Autologon`,
+   run `Autologon`, type your username, domain and password, and click Enable. If it
+   doesn't stick, turn off "only allow Windows Hello sign-in" (Settings → Accounts →
+   Sign-in options). Trade-off: anyone at the laptop gets your session after a reboot, and
+   the password is stored as an LSA secret that administrators can read. Rerun setup with
+   `-LockAtLogon` to lock the screen after automatic sign-ins. Undo: Autologon → Disable.
 
 ### 2. WSL
 
