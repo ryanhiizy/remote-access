@@ -154,6 +154,7 @@ fn main_with(args: &[String]) -> Res<i32> {
             only(false, command)?;
             let mut report = helpers::install_helpers(&home, &helpers::binary()?)?;
             report["zram"] = helpers::install_zram(&paths.directory);
+            report["earlyoom"] = helpers::install_earlyoom(&paths.directory);
             say(pretty(&report));
         }
         "skills-sync" => {
