@@ -3,7 +3,7 @@ name: remote-access
 description: Mac ↔ WSL ↔ Windows fleet; use when a machine, SSH, WSL or a dev server port is unreachable, or after a crash or reboot.
 ---
 
-Three machines, one laptop's worth of them on Tailscale:
+Three machines on Tailscale:
 
 - **Mac**: orchestrator; runs Aside. `remote-access` commands below run here.
 - **WSL**: where agents run; `ssh <host>` (config `host`).

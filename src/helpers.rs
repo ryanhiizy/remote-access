@@ -55,9 +55,16 @@ fn write_script(file: &Path, text: &str) -> Res<()> {
 
 pub const SKILL: &str = include_str!("../skills/remote-access/SKILL.md");
 
-/// The agent skill, in the directory skills-sync carries to the other machine.
+/// The agent skill, in the directory skills-sync carries to the other machine. Claude Code
+/// loads only ~/.claude/skills, so link it there like the other skills; never replace an entry.
 pub fn install_skill(home: &Path) -> Res<String> {
     private_write(&home.join(".agents/skills/remote-access/SKILL.md"), SKILL, 0o644)?;
+    let claude = home.join(".claude/skills");
+    let link = claude.join("remote-access");
+    if claude.is_dir() && fs::symlink_metadata(&link).is_err() {
+        std::os::unix::fs::symlink("../../.agents/skills/remote-access", &link)
+            .map_err(|error| format!("{}: {error}", link.display()))?;
+    }
     Ok("~/.agents/skills/remote-access".into())
 }
 
@@ -342,6 +349,18 @@ mod tests {
         assert_eq!(run("xdg-open", &["/"]), "open|--|/|");
         assert!(!directory.join("open.mjs").exists());
         assert_eq!(fs::read_to_string(home.join(".agents/skills/remote-access/SKILL.md")).unwrap(), SKILL);
+        // No ~/.claude/skills yet: nothing is created there.
+        assert!(!home.join(".claude").exists());
+        let link = home.join(".claude/skills/remote-access");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        install_skill(&home).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("../../.agents/skills/remote-access"));
+        assert_eq!(fs::read_to_string(link.join("SKILL.md")).unwrap(), SKILL);
+        // An existing entry is left alone.
+        fs::remove_file(&link).unwrap();
+        fs::create_dir(&link).unwrap();
+        install_skill(&home).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_dir());
         // A native Aside CLI is never replaced.
         fs::write(home.join(".local/bin/aside"), b"\x7fELF\xff\xfe").unwrap();
         assert!(install_helpers(&home, &binary).unwrap_err().contains("already exists"));
