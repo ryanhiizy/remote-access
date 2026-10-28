@@ -1,0 +1,2 @@
+# Kill the biggest process before memory and zram fill, so SSH stays responsive.
+EARLYOOM_ARGS="-m 6 -s 15 -r 0 --avoid ^(sshd|sshd-session|systemd|systemd-journal|init|tailscaled|containerd|dockerd)$ --prefer ^(node|MainThread|vitest|python|pytest)$"

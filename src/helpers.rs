@@ -218,6 +218,46 @@ pub fn install_zram(directory: &Path) -> Value {
     }
 }
 
+const EARLYOOM_TARGET: &str = "/etc/default/earlyoom";
+pub const EARLYOOM_SETTINGS: &str = include_str!("../wsl/earlyoom");
+
+pub fn earlyoom_commands(settings: &str, installed: bool) -> Vec<String> {
+    let mut commands = Vec::new();
+    if !installed {
+        commands.push("apt-get install -y earlyoom".into());
+    }
+    commands.push(format!("install -m 0644 {} {EARLYOOM_TARGET}", shell_quote(settings)));
+    commands.push("systemctl enable earlyoom".into());
+    commands.push("systemctl restart earlyoom".into());
+    commands
+}
+
+/// Kills the biggest runaway process before memory runs out, sparing the remote-access path.
+/// Needs root, so print the commands when sudo would prompt.
+pub fn install_earlyoom(directory: &Path) -> Value {
+    let installed = Path::new("/usr/bin/earlyoom").exists();
+    let current = fs::read_to_string(EARLYOOM_TARGET).is_ok_and(|text| text == EARLYOOM_SETTINGS);
+    if installed && current {
+        return "current".into();
+    }
+    let settings = directory.join("earlyoom");
+    if let Err(error) = private_write(&settings, EARLYOOM_SETTINGS, 0o644) {
+        return format!("settings not written: {error}").into();
+    }
+    let commands = earlyoom_commands(&settings.display().to_string(), installed);
+    let mut args = vec!["/bin/sh".to_owned(), "-c".into(), commands.join(" && ")];
+    let program = if uid() == 0 {
+        args.remove(0)
+    } else {
+        args.insert(0, "-n".into());
+        "sudo".into()
+    };
+    match capture(&program, &args, None, DEFAULT_TIMEOUT) {
+        Ok(output) if output.status == Some(0) => "installed".into(),
+        _ => json!({ "run": commands.iter().map(|command| format!("sudo {command}")).collect::<Vec<_>>() }),
+    }
+}
+
 pub fn skills_sync(home: &Path, args: &[String]) -> Res<i32> {
     let prefer = match args {
         [] => None,
@@ -432,6 +472,21 @@ mod tests {
                 "systemctl enable --now zram-swap.service",
             ]
         );
+    }
+
+    #[test]
+    fn earlyoom_settings_and_install_commands() {
+        assert!(EARLYOOM_SETTINGS.contains("EARLYOOM_ARGS=\"-m 6 -s 15 -r 0 --avoid ^(sshd|"));
+        assert_eq!(
+            earlyoom_commands("/home/o'neil/earlyoom", false),
+            [
+                "apt-get install -y earlyoom",
+                "install -m 0644 '/home/o'\\''neil/earlyoom' /etc/default/earlyoom",
+                "systemctl enable earlyoom",
+                "systemctl restart earlyoom",
+            ]
+        );
+        assert_eq!(earlyoom_commands("/x/earlyoom", true)[0], "install -m 0644 '/x/earlyoom' /etc/default/earlyoom");
     }
 
     #[test]

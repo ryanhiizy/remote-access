@@ -85,7 +85,7 @@ Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
 
 1. Enable systemd (`[boot] systemd=true` in `/etc/wsl.conf`), install `openssh-server`,
    `curl` and `iproute2`, and allow key logins only.
-2. Install the helpers (they also install 16 GB of zram swap, or print the sudo commands):
+2. Install the helpers (they also install 16 GB of zram swap and earlyoom's settings, or print the sudo commands):
    ```sh
    cargo install --locked --path . --root ~/.local
    remote-access install-helpers
