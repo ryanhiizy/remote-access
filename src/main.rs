@@ -16,13 +16,20 @@ pub fn say(text: impl std::fmt::Display) {
     let _ = writeln!(std::io::stdout(), "{text}");
 }
 
-const HELP: &str = "Usage: remote-access <command>
+const HELP: &str = "Usage: remote-access <command>   (run everything from WSL; only recover needs the Mac)
 
-Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall | recover
-      forward PORT [LOCAL_PORT]
-WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
-Both: claude-login [--email EMAIL] | status [--json]   (nonzero when a service is unavailable)
+status [--json]                  services + Windows crash report; nonzero when one is unavailable
+mac [-- COMMAND...]              Mac shell, or one command
+open URL_OR_PATH                 URL in Aside; file to ~/Downloads/WSL, opened
+forward PORT [MAC_PORT]          Mac 127.0.0.1:MAC_PORT → WSL localhost:PORT until killed
+start | stop | restart | logs    Mac app tunnel (launchd)
+skills-sync [--prefer mac|wsl] | gcloud-login | claude-login [--email EMAIL]
+Setup: install-helpers | init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | uninstall
+Mac:   recover                   WSL down: crash report and restart over Windows SSH
 ";
+
+/// Mac launchd and setup commands. From WSL they run on the Mac over Mac SSH.
+const ON_MAC: [&str; 7] = ["init", "install", "start", "stop", "restart", "logs", "uninstall"];
 
 fn only(wanted_mac: bool, command: &str) -> Res<()> {
     if MAC == wanted_mac {
@@ -58,9 +65,11 @@ fn main_with(args: &[String]) -> Res<i32> {
     let (command, rest) = args.split_first().map_or(("", &[][..]), |(command, rest)| (command.as_str(), rest));
     let home = home()?;
     let paths: Paths = locations(&home, MAC);
+    if !MAC && ON_MAC.contains(&command) {
+        helpers::remote_access_on_mac(&home, args)?;
+    }
     match command {
         "init" => {
-            only(true, command)?;
             let found = options(rest, &["host", "mac"])?;
             let value = |name| found.iter().rev().find(|(found, _)| *found == name).map(|(_, value)| *value);
             if paths.config.exists() {
@@ -71,41 +80,36 @@ fn main_with(args: &[String]) -> Res<i32> {
             say(format!("Saved {}. Review it, then run install.", paths.config.display()));
         }
         "install" => {
-            only(true, command)?;
             let mut report = manager::install(&read_config(&paths)?, &home)?;
             report["skill"] = helpers::install_skill(&home)?.into();
             say(pretty(&report));
         }
         "start" => {
-            only(true, command)?;
             manager::start(&home)?;
         }
         "stop" => {
-            only(true, command)?;
             manager::stop()?;
         }
         "restart" => {
-            only(true, command)?;
             manager::stop()?;
             manager::start(&home)?;
         }
         "uninstall" => {
-            only(true, command)?;
             manager::uninstall(&home)?;
         }
         "logs" => {
-            only(true, command)?;
             if let Ok(log) = std::fs::read_to_string(paths.directory.join("tunnel.log")) {
                 let lines: Vec<&str> = log.trim_end().lines().collect();
                 say(lines[lines.len().saturating_sub(30)..].join("\n"));
             }
         }
         "recover" => {
-            only(true, command)?;
+            if !MAC {
+                return Err("recover is for when WSL is down; run it on the Mac.".into());
+            }
             manager::recover(&read_config(&paths)?, Duration::from_secs(120))?;
         }
         "forward" => {
-            only(true, command)?;
             let port = |text: &String| text.parse::<u16>().ok().filter(|port| *port > 0);
             let (port, local) = match rest {
                 [port_text] => (port(port_text), port(port_text)),
@@ -113,8 +117,11 @@ fn main_with(args: &[String]) -> Res<i32> {
                 _ => (None, None),
             };
             let (Some(port), Some(local)) = (port, local) else {
-                return Err("Usage: remote-access forward PORT [LOCAL_PORT]".into());
+                return Err("Usage: remote-access forward PORT [MAC_PORT]".into());
             };
+            if !MAC {
+                helpers::forward(&home, port, local)?;
+            }
             let config = read_config(&paths)?;
             say(format!("http://127.0.0.1:{local} → {} localhost:{port}; Ctrl-C to stop.", config.host));
             process::exec("/usr/bin/ssh", &manager::forward_args(&config, port, local))?;

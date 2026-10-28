@@ -26,10 +26,10 @@ fn mac_setup(home: &Path) -> Res<Mac> {
     }
 }
 
-/// The remote command for the Mac's Aside CLI: every argument single-quoted, so code,
-/// empty arguments and trailing newlines arrive intact and nothing expands.
-pub fn aside_command(user: &str, args: &[String]) -> String {
-    let mut command = format!("exec {}", shell_quote(&format!("/Users/{user}/.local/bin/aside")));
+/// The remote command for a program in the Mac's ~/.local/bin: every argument single-quoted,
+/// so code, empty arguments and trailing newlines arrive intact and nothing expands.
+pub fn mac_command(user: &str, program: &str, args: &[String]) -> String {
+    let mut command = format!("exec {}", shell_quote(&format!("/Users/{user}/.local/bin/{program}")));
     for arg in args {
         command.push(' ');
         command.push_str(&shell_quote(arg));
@@ -37,14 +37,51 @@ pub fn aside_command(user: &str, args: &[String]) -> String {
     command
 }
 
-/// Aside runs only on the Mac. exec keeps nothing of ours beside the MCP stream.
-pub fn aside(home: &Path, args: &[String]) -> Res<()> {
+/// exec keeps nothing of ours resident, and the remote exit status passes through.
+fn exec_on_mac(home: &Path, program: &str, args: &[String]) -> Res<()> {
     let mac = mac_setup(home)?;
     let mut ssh = strings(["-T", "-F"]);
     ssh.push(mac.paths.ssh_config.display().to_string());
     ssh.extend(strings(["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]));
-    ssh.extend([mac.host, aside_command(&mac.user, args)]);
+    ssh.extend([mac.host, mac_command(&mac.user, program, args)]);
     exec("/usr/bin/ssh", &ssh)
+}
+
+/// Aside runs only on the Mac.
+pub fn aside(home: &Path, args: &[String]) -> Res<()> {
+    exec_on_mac(home, "aside", args)
+}
+
+/// The Mac's launchd tunnel and setup commands, run there.
+pub fn remote_access_on_mac(home: &Path, args: &[String]) -> Res<()> {
+    exec_on_mac(home, "remote-access", args)
+}
+
+/// Mac 127.0.0.1:MAC_PORT → WSL localhost:PORT as a reverse forward. Its own connection, not
+/// the shared master, so a busy port fails at once and killing it ends the forward.
+pub fn forward_args(ssh_config: &str, host: &str, port: u16, mac_port: u16) -> Vec<String> {
+    let mut args = strings(["-N", "-T", "-F"]);
+    args.push(ssh_config.into());
+    args.extend(strings([
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+    ]));
+    args.extend(["-R".into(), format!("127.0.0.1:{mac_port}:localhost:{port}"), host.into()]);
+    args
+}
+
+pub fn forward(home: &Path, port: u16, mac_port: u16) -> Res<()> {
+    let mac = mac_setup(home)?;
+    crate::say(format!("Mac http://127.0.0.1:{mac_port} → localhost:{port} until killed."));
+    exec("/usr/bin/ssh", &forward_args(&mac.paths.ssh_config.display().to_string(), &mac.host, port, mac_port))
 }
 
 const ASIDE_MARKER: &str = "remote-access Aside proxy";
@@ -302,7 +339,7 @@ mod tests {
     /// program that prints its arguments one per NUL-terminated field.
     fn remote(args: &[String]) -> Vec<String> {
         let command =
-            aside_command("test", args).replace(&shell_quote("/Users/test/.local/bin/aside"), "printf '%s\\0'");
+            mac_command("test", "aside", args).replace(&shell_quote("/Users/test/.local/bin/aside"), "printf '%s\\0'");
         let output = Command::new("/bin/sh").args(["-c", &command]).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let text = String::from_utf8(output.stdout).unwrap();
@@ -323,7 +360,17 @@ mod tests {
             "héllo\n\n",
         ]);
         assert_eq!(remote(&args), args);
-        assert!(aside_command("test", &[]).ends_with("/aside'"));
+        assert!(mac_command("test", "remote-access", &[]).ends_with("/.local/bin/remote-access'"));
+    }
+
+    #[test]
+    fn forward_listens_on_mac_loopback_over_its_own_connection() {
+        let args = forward_args("/c/mac-ssh.conf", "mac", 5173, 3000);
+        assert_eq!(args[..4], strings(["-N", "-T", "-F", "/c/mac-ssh.conf"]));
+        assert_eq!(args[args.len() - 3..], strings(["-R", "127.0.0.1:3000:localhost:5173", "mac"]));
+        for option in ["ControlMaster=no", "ControlPath=none", "ExitOnForwardFailure=yes"] {
+            assert!(args.contains(&option.into()), "{option}");
+        }
     }
 
     #[test]
