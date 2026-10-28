@@ -53,6 +53,14 @@ fn write_script(file: &Path, text: &str) -> Res<()> {
     private_write(file, text, 0o700)
 }
 
+pub const SKILL: &str = include_str!("../skills/remote-access/SKILL.md");
+
+/// The agent skill, in the directory skills-sync carries to the other machine.
+pub fn install_skill(home: &Path) -> Res<String> {
+    private_write(&home.join(".agents/skills/remote-access/SKILL.md"), SKILL, 0o644)?;
+    Ok("~/.agents/skills/remote-access".into())
+}
+
 pub fn install_helpers(home: &Path, binary: &Path) -> Res<Value> {
     let mac = mac_setup(home)?;
     let bin = home.join(".local/bin");
@@ -124,6 +132,7 @@ servercmd = /opt/homebrew/bin/unison
     Ok(json!({
         "browser": bin.join("remote-access-browser").display().to_string(),
         "helpers": ["aside", "xdg-open", "sensible-browser", "www-browser", "pbcopy", "pbpaste"],
+        "skill": install_skill(home)?,
         "unison": "~/.unison/skills.prf",
     }))
 }
@@ -332,6 +341,7 @@ mod tests {
         assert_eq!(run("xdg-open", &["file:///tmp"]), "open|--|file:///tmp|");
         assert_eq!(run("xdg-open", &["/"]), "open|--|/|");
         assert!(!directory.join("open.mjs").exists());
+        assert_eq!(fs::read_to_string(home.join(".agents/skills/remote-access/SKILL.md")).unwrap(), SKILL);
         // A native Aside CLI is never replaced.
         fs::write(home.join(".local/bin/aside"), b"\x7fELF\xff\xfe").unwrap();
         assert!(install_helpers(&home, &binary).unwrap_err().contains("already exists"));

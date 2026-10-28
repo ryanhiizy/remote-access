@@ -19,6 +19,7 @@ pub fn say(text: impl std::fmt::Display) {
 const HELP: &str = "Usage: remote-access <command>
 
 Mac:  init --host WSL_TAILSCALE_NAME [--mac MAC_TAILSCALE_NAME] | install | start | stop | restart | logs | uninstall | recover
+      forward PORT [LOCAL_PORT]
 WSL:  mac [-- COMMAND...] | open URL_OR_PATH | install-helpers | skills-sync [--prefer mac|wsl] | gcloud-login
 Both: claude-login [--email EMAIL] | status [--json]   (nonzero when a service is unavailable)
 ";
@@ -71,7 +72,9 @@ fn main_with(args: &[String]) -> Res<i32> {
         }
         "install" => {
             only(true, command)?;
-            say(pretty(&manager::install(&read_config(&paths)?, &home)?));
+            let mut report = manager::install(&read_config(&paths)?, &home)?;
+            report["skill"] = helpers::install_skill(&home)?.into();
+            say(pretty(&report));
         }
         "start" => {
             only(true, command)?;
@@ -100,6 +103,21 @@ fn main_with(args: &[String]) -> Res<i32> {
         "recover" => {
             only(true, command)?;
             manager::recover(&read_config(&paths)?, Duration::from_secs(120))?;
+        }
+        "forward" => {
+            only(true, command)?;
+            let port = |text: &String| text.parse::<u16>().ok().filter(|port| *port > 0);
+            let (port, local) = match rest {
+                [port_text] => (port(port_text), port(port_text)),
+                [port_text, local] => (port(port_text), port(local)),
+                _ => (None, None),
+            };
+            let (Some(port), Some(local)) = (port, local) else {
+                return Err("Usage: remote-access forward PORT [LOCAL_PORT]".into());
+            };
+            let config = read_config(&paths)?;
+            say(format!("http://127.0.0.1:{local} → {} localhost:{port}; Ctrl-C to stop.", config.host));
+            process::exec("/usr/bin/ssh", &manager::forward_args(&config, port, local))?;
         }
         "status" => {
             let report = manager::status(&read_config(&paths)?);

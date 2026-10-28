@@ -4,10 +4,12 @@
   on port 2222 as an out-of-band way in when WSL is down. Safe to rerun.
   Run in Administrator PowerShell as the user who owns the WSL distro:
     .\setup.ps1 -MacPublicKey 'ssh-ed25519 AAAA... you@mac'
+  -LockAtLogon locks the screen after an automatic sign-in (Sysinternals Autologon).
 #>
 param(
   [Parameter(Mandatory)][string]$MacPublicKey,
-  [ValidatePattern('^[\w.-]+$')][string]$Distro = 'Ubuntu'
+  [ValidatePattern('^[\w.-]+$')][string]$Distro = 'Ubuntu',
+  [switch]$LockAtLogon
 )
 $ErrorActionPreference = 'Stop'
 $key = $MacPublicKey.Trim()
@@ -31,6 +33,17 @@ $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -Ru
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
   -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
 Register-ScheduledTask -TaskName 'WSL keep-alive' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+
+# With Autologon, update restarts and crash reboots sign in unattended so keep-alive runs.
+# Lock right after, but only while AutoAdminLogon is on, so manual sign-ins stay unlocked.
+if ($LockAtLogon) {
+  $lock = "if ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon').AutoAdminLogon -eq '1') { rundll32.exe user32.dll,LockWorkStation }"
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lock))
+  $lockAction = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded"
+  $lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden
+  Register-ScheduledTask -TaskName 'Lock after auto sign-in' -Action $lockAction -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $user) `
+    -Principal $principal -Settings $lockSettings -Force | Out-Null
+}
 
 # OpenSSH Server.
 $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
@@ -81,3 +94,4 @@ foreach ($setting in 'networkingMode=mirrored', 'swap=0') {
   if ($text -notmatch $pattern) { Write-Warning "$wslconfig lacks $setting under [wsl2]; add it, then run wsl --shutdown." }
 }
 "WSL keep-alive task: $Distro. Windows sshd: port $port, keys only, Tailscale only."
+if ($LockAtLogon) { "Lock after auto sign-in task: registered." }

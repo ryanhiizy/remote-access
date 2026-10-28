@@ -82,9 +82,76 @@ pub fn windows_ssh_args(config: &Config, command: &str) -> Res<Vec<String>> {
     Ok(args)
 }
 
-fn windows_reachable(config: &Config) -> bool {
-    let Ok(args) = windows_ssh_args(config, "exit") else { return false };
-    capture("/usr/bin/ssh", &args, None, Duration::from_secs(20)).is_ok_and(|output| output.status == Some(0))
+/// Windows System log for the last 7 days, as one JSON line: last bugcheck (WER 1001),
+/// unexpected shutdowns (Kernel-Power 41, EventLog 6008), planned restarts (1074),
+/// last boot and GPU drivers. Newest first.
+pub const CRASH_SCRIPT: &str = r#"$ProgressPreference = 'SilentlyContinue'
+$events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 41, 1001, 1074, 6008; StartTime = (Get-Date).AddDays(-7) } -ErrorAction SilentlyContinue)
+$bug = $events | Where-Object { $_.Id -eq 1001 -and $_.ProviderName -like '*WER-SystemErrorReporting' } | Select-Object -First 1
+$bugcheck = if ($bug) {
+  $text = "$($bug.Properties[0].Value)"
+  $code = if ($text -match '0x([0-9a-fA-F]+)') { '0x{0:x}' -f [Convert]::ToInt64($Matches[1], 16) } else { $text }
+  [ordered]@{ time = $bug.TimeCreated.ToString('s'); code = $code }
+}
+$report = [ordered]@{
+  lastBoot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString('s')
+  bugcheck = $bugcheck
+  unexpected = @($events | Where-Object { $_.Id -in 41, 6008 } | Select-Object -First 10 | ForEach-Object { [ordered]@{ time = $_.TimeCreated.ToString('s'); event = $_.Id } })
+  restarts = @($events | Where-Object Id -eq 1074 | Select-Object -First 5 | ForEach-Object {
+    [ordered]@{ time = $_.TimeCreated.ToString('s'); process = ("$($_.Properties[0].Value)" -replace ' \(.*$' | Split-Path -Leaf); reason = "$($_.Properties[2].Value)" } })
+  gpu = @(Get-CimInstance Win32_VideoController | ForEach-Object { [ordered]@{ name = $_.Name; driver = $_.DriverVersion } })
+}
+ConvertTo-Json -InputObject $report -Depth 3 -Compress
+"#;
+
+/// None when Windows SSH is down; otherwise the crash report, or an error object
+/// when Windows answered but the report did not parse.
+pub fn crash_report(config: &Config) -> Option<Value> {
+    let args = windows_ssh_args(config, &powershell(CRASH_SCRIPT)).ok()?;
+    let output = capture("/usr/bin/ssh", &args, None, Duration::from_secs(30)).ok()?;
+    if output.timed_out || output.status == Some(255) {
+        return None;
+    }
+    let line = output.stdout.lines().rev().find(|line| line.starts_with('{')).unwrap_or("");
+    Some(serde_json::from_str(line).unwrap_or_else(|_| {
+        let detail = output.stderr.trim();
+        json!({ "error": if detail.is_empty() { "unreadable crash report" } else { detail } })
+    }))
+}
+
+/// A few lines for people; the JSON keeps every field.
+pub fn crash_text(crash: &Value) -> Vec<String> {
+    let text = |value: &Value| value.as_str().unwrap_or("").to_owned();
+    if let Some(error) = crash["error"].as_str() {
+        return vec![format!("crash report: {error}")];
+    }
+    let mut lines = vec![format!("last boot: {}", text(&crash["lastBoot"]))];
+    if crash["bugcheck"].is_object() {
+        lines.push(format!("bugcheck: {} at {}", text(&crash["bugcheck"]["code"]), text(&crash["bugcheck"]["time"])));
+    }
+    if let Some(events) = crash["unexpected"].as_array().filter(|events| !events.is_empty()) {
+        let count = |id: u64| events.iter().filter(|event| event["event"] == id).count();
+        lines.push(format!(
+            "unexpected shutdowns (7d): 41×{} 6008×{}, last {}",
+            count(41),
+            count(6008),
+            events.iter().map(|event| text(&event["time"])).max().unwrap_or_default()
+        ));
+    }
+    if let Some(restart) = crash["restarts"].as_array().and_then(|restarts| restarts.first()) {
+        lines.push(format!(
+            "last restart: {} by {}: {}",
+            text(&restart["time"]),
+            text(&restart["process"]),
+            text(&restart["reason"])
+        ));
+    }
+    if let Some(gpus) = crash["gpu"].as_array().filter(|gpus| !gpus.is_empty()) {
+        let gpus: Vec<String> =
+            gpus.iter().map(|gpu| format!("{} {}", text(&gpu["name"]), text(&gpu["driver"]))).collect();
+        lines.push(format!("gpu: {}", gpus.join(", ")));
+    }
+    lines
 }
 
 /// Last crash dump, keep-alive state and distro states, then restart the keep-alive task.
@@ -146,10 +213,10 @@ pub fn status(config: &Config) -> Report {
     let probe = probe_script(config);
     // Separates "Windows down" (laptop off or offline) from "WSL down" (recover).
     let (windows, output) = thread::scope(|scope| {
-        let windows = (MAC && config.windows.is_some()).then(|| scope.spawn(|| windows_reachable(config)));
+        let windows = (MAC && config.windows.is_some()).then(|| scope.spawn(|| crash_report(config)));
         let output =
             if MAC { ssh(config, &probe) } else { run("/bin/sh", &strings(["-s"]), Some(&probe), DEFAULT_TIMEOUT) };
-        (windows.map(|check| check.join().unwrap_or(false)), output)
+        (windows.map(|check| check.join().unwrap_or(None)), output)
     });
     let found: Vec<(String, String)> = output
         .as_deref()
@@ -169,9 +236,12 @@ pub fn status(config: &Config) -> Report {
         healthy &= tunnel == "running";
         report["agents"] = json!({ "tunnel": tunnel });
     }
-    if let Some(ready) = windows {
-        healthy &= ready;
-        report["windows"] = (if ready { "ready" } else { "unavailable" }).into();
+    if let Some(crash) = windows {
+        healthy &= crash.is_some();
+        report["windows"] = (if crash.is_some() { "ready" } else { "unavailable" }).into();
+        if let Some(crash) = crash {
+            report["crash"] = crash;
+        }
     }
     if let Err(error) = output {
         report["error"] = error.into();
@@ -191,6 +261,9 @@ pub fn status_text(report: &Value) -> String {
     let windows = report["windows"].as_str();
     if let Some(windows) = windows {
         lines.push(format!("  windows: {windows}"));
+    }
+    if report["crash"].is_object() {
+        lines.extend(crash_text(&report["crash"]).iter().map(|line| format!("    {line}")));
     }
     if let Some(error) = report["error"].as_str() {
         lines.push(format!("  error: {error}"));
@@ -361,6 +434,8 @@ pub fn install(config: &Config, home: &Path) -> Res<Value> {
 }
 
 pub fn recover(config: &Config, timeout: Duration) -> Res<()> {
+    let crash = crash_report(config).ok_or("Windows SSH unreachable; the laptop is off, asleep or offline.")?;
+    crash_text(&crash).iter().for_each(crate::say);
     let args = windows_ssh_args(config, &powershell(RECOVER_SCRIPT))?;
     let output = capture("/usr/bin/ssh", &args, None, Duration::from_secs(60));
     // ssh exits 255 for its own failures; any other nonzero status is the script's.
@@ -394,6 +469,27 @@ pub fn recover(config: &Config, timeout: Duration) -> Res<()> {
     }
     crate::say(format!("WSL SSH: ready after {}s", started.elapsed().as_secs_f64().round()));
     Ok(())
+}
+
+/// A WSL dev server on the Mac's loopback. The target is localhost so WSL's sshd tries
+/// both 127.0.0.1 and ::1, whichever the server bound.
+pub fn forward_args(config: &Config, port: u16, local: u16) -> Vec<String> {
+    let mut args = strings([
+        "-N",
+        "-T",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+    ]);
+    args.extend(["-L".into(), format!("127.0.0.1:{local}:localhost:{port}"), config.host.clone()]);
+    args
 }
 
 pub fn uninstall(home: &Path) -> Res<()> {
@@ -456,6 +552,38 @@ mod tests {
             status_text(&report),
             "mac → wsl\n  tunnel: running\n  app: unavailable\n  windows: ready\n  error: ssh failed: timeout\n  WSL down, Windows up: run remote-access recover"
         );
+    }
+
+    #[test]
+    fn forward_binds_mac_loopback_to_wsl_localhost() {
+        let args = forward_args(&config(Value::Null), 5173, 3000);
+        assert_eq!(args[args.len() - 3..], ["-L", "127.0.0.1:3000:localhost:5173", "laptop.ts.net"]);
+        assert!(args.contains(&"ExitOnForwardFailure=yes".into()) && !args.contains(&"ClearAllForwardings=yes".into()));
+    }
+
+    #[test]
+    fn crash_script_reads_the_system_log_and_crash_text_stays_short() {
+        for needle in ["Id = 41, 1001, 1074, 6008", "AddDays(-7)", "WER-SystemErrorReporting", "Win32_VideoController"]
+        {
+            assert!(CRASH_SCRIPT.contains(needle), "{needle}");
+        }
+        let crash = json!({ "lastBoot": "2026-10-28T17:44:28", "bugcheck": { "time": "2026-10-28T17:09:51", "code": "0x116" },
+            "unexpected": [{ "time": "2026-10-28T17:09:38", "event": 41 }, { "time": "2026-10-28T17:09:52", "event": 6008 }],
+            "restarts": [{ "time": "2026-10-23T10:29:08", "process": "MoUsoCoreWorker.exe", "reason": "Operating System: Service pack (Planned)" }],
+            "gpu": [{ "name": "NVIDIA GeForce RTX 5070", "driver": "32.0.16.2101" }, { "name": "Intel(R) Graphics", "driver": "32.0.101.8724" }] });
+        assert_eq!(
+            crash_text(&crash),
+            [
+                "last boot: 2026-10-28T17:44:28",
+                "bugcheck: 0x116 at 2026-10-28T17:09:51",
+                "unexpected shutdowns (7d): 41×1 6008×1, last 2026-10-28T17:09:52",
+                "last restart: 2026-10-23T10:29:08 by MoUsoCoreWorker.exe: Operating System: Service pack (Planned)",
+                "gpu: NVIDIA GeForce RTX 5070 32.0.16.2101, Intel(R) Graphics 32.0.101.8724",
+            ]
+        );
+        let quiet = json!({ "lastBoot": "b", "bugcheck": null, "unexpected": [], "restarts": [], "gpu": [] });
+        assert_eq!(crash_text(&quiet), ["last boot: b"]);
+        assert_eq!(crash_text(&json!({ "error": "x" })), ["crash report: x"]);
     }
 
     #[test]
