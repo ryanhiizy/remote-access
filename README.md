@@ -19,35 +19,34 @@ plus a Windows way in when WSL is down.
 
 ## Commands
 
-**WSL** (the Mac's Tailscale name is also its SSH host entry):
+Run everything from WSL; only `recover` needs the Mac (WSL is down when you need it).
+Mac tunnel and setup commands run on the Mac over the WSL → Mac SSH. The Mac's Tailscale
+name is also its SSH host entry.
 
 | Command | Does |
 |---|---|
-| `aside guide` | Mac Aside CLI over SSH |
+| `remote-access status [--json]` | every service, plus Windows crash report; exits nonzero if one is down |
 | `remote-access mac [-- COMMAND]` | Mac shell, or one command |
 | `scp -F ~/.config/remote-access/mac-ssh.conf FILE MAC:PATH` | copy to the Mac |
 | `remote-access open URL_OR_PATH` | URL → Aside; file → `~/Downloads/WSL` and opened (also `xdg-open`) |
+| `aside guide` | Mac Aside CLI over SSH |
 | `pbcopy` / `pbpaste` | Mac clipboard |
+| `remote-access forward PORT [MAC_PORT]` | Mac `127.0.0.1:MAC_PORT` → WSL `localhost:PORT` until killed |
+| `remote-access start` / `stop` / `restart` / `logs` | Mac app tunnel (launchd) |
 | `remote-access skills-sync [--prefer mac\|wsl]` | Unison sync of `~/.agents/skills` |
 | `remote-access gcloud-login` | gcloud login + ADC, approved on the Mac |
 | `remote-access claude-login [--email EMAIL]` | Claude Code login on WSL, approved in the Mac browser |
+| `remote-access uninstall` | removes the Mac tunnel; keeps config and SSH keys |
 
-**Mac:**
-
-| Command | Does |
-|---|---|
-| `remote-access status [--json]` | checks every service, plus Windows crash report; exits nonzero if one is down |
-| `remote-access recover` | over Windows SSH: crash report, keep-alive state, restarts WSL |
-| `remote-access forward PORT [LOCAL_PORT]` | Mac `127.0.0.1:LOCAL_PORT` → WSL `localhost:PORT` until Ctrl-C |
-| `remote-access start` / `stop` / `restart` / `logs` | app tunnel (launchd) |
-| `remote-access uninstall` | removes the tunnel; keeps config and SSH keys |
+**Mac only:** `remote-access recover` reaches Windows SSH: crash report, keep-alive state,
+restarts WSL. `status` and `forward` also work on the Mac.
 
 Behaviour worth knowing:
 
 - `open` doesn't wait for pages to load, and edits to opened files don't sync back.
-- Only the app port is forwarded permanently; use `forward` for others. OAuth callbacks
-  need a no-browser or device login.
-- The crash report reads the Windows System log for 7 days: last bugcheck (1001),
+- Only the app port is forwarded permanently; use `forward` for others (background it).
+  OAuth callbacks need a no-browser or device login.
+- The crash report comes from Windows interop on WSL and Windows SSH on the Mac. It reads the Windows System log for 7 days: last bugcheck (1001),
   unexpected shutdowns (41, 6008), restarts (1074, with process and reason), last boot
   and GPU drivers.
 - `skills-sync` skips conflicts unless you pass `--prefer`. Link agent skill directories
@@ -106,7 +105,8 @@ Needs Tailscale on both machines, Rust 1.85+, and Unison 2.52+ for skills sync.
    remote-access init --host WSL.TAILNET.ts.net --mac MAC.TAILNET.ts.net
    remote-access install  # rerun after source updates
    ```
-   `install` gives WSL → Mac SSH a pinned host key and a Tailscale-only key.
+   `install` gives WSL → Mac SSH a pinned host key and a Tailscale-only key that may
+   reverse-forward to Mac loopback only.
    launchd keeps the app tunnel up, bound to loopback.
 5. Optional, for `recover`: add `"windows": {}` to the config, then accept the host
    key once with `ssh -p 2222 WSL.TAILNET.ts.net`. If your Windows username differs

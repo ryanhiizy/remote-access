@@ -1,6 +1,6 @@
 use crate::Res;
 use crate::config::{Config, LABEL, MAC, Paths, locations, plist, pretty, shell_quote, tunnel_args};
-use crate::process::{DEFAULT_TIMEOUT, capture, run, strings, uid};
+use crate::process::{DEFAULT_TIMEOUT, Output, capture, run, strings, uid};
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::io::Write;
@@ -55,11 +55,19 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// Windows OpenSSH runs commands in Windows PowerShell; -EncodedCommand avoids nested quoting.
-pub fn powershell(script: &str) -> String {
+/// -EncodedCommand takes UTF-16LE base64, which avoids nested quoting.
+fn encoded(script: &str) -> String {
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", base64(&utf16))
+    base64(&utf16)
 }
+
+/// Windows OpenSSH runs commands in Windows PowerShell.
+pub fn powershell(script: &str) -> String {
+    format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(script))
+}
+
+/// Full path: this WSL leaves the Windows PATH out.
+const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 
 pub fn windows_ssh_args(config: &Config, command: &str) -> Res<Vec<String>> {
     let windows =
@@ -104,19 +112,32 @@ $report = [ordered]@{
 ConvertTo-Json -InputObject $report -Depth 3 -Compress
 "#;
 
-/// None when Windows SSH is down; otherwise the crash report, or an error object
-/// when Windows answered but the report did not parse.
+/// The report's JSON line, or an error object when Windows answered but it did not parse.
+fn parse_crash(output: &Output) -> Value {
+    // trim_end drops the \r of Windows line endings.
+    let line = output.stdout.lines().map(str::trim_end).rev().find(|line| line.starts_with('{')).unwrap_or("");
+    serde_json::from_str(line).unwrap_or_else(|_| {
+        let detail = output.stderr.trim();
+        json!({ "error": if detail.is_empty() { "unreadable crash report" } else { detail } })
+    })
+}
+
+/// Mac: over Windows SSH; None when it is down.
 pub fn crash_report(config: &Config) -> Option<Value> {
     let args = windows_ssh_args(config, &powershell(CRASH_SCRIPT)).ok()?;
     let output = capture("/usr/bin/ssh", &args, None, Duration::from_secs(30)).ok()?;
     if output.timed_out || output.status == Some(255) {
         return None;
     }
-    let line = output.stdout.lines().rev().find(|line| line.starts_with('{')).unwrap_or("");
-    Some(serde_json::from_str(line).unwrap_or_else(|_| {
-        let detail = output.stderr.trim();
-        json!({ "error": if detail.is_empty() { "unreadable crash report" } else { detail } })
-    }))
+    Some(parse_crash(&output))
+}
+
+/// WSL: through interop, which runs it as the signed-in Windows user. None without interop.
+fn local_crash_report() -> Option<Value> {
+    let mut args = strings(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    args.push(encoded(CRASH_SCRIPT));
+    let output = capture(POWERSHELL, &args, None, Duration::from_secs(30)).ok()?;
+    (!output.timed_out).then(|| parse_crash(&output))
 }
 
 /// A few lines for people; the JSON keeps every field.
@@ -212,11 +233,13 @@ pub struct Report {
 pub fn status(config: &Config) -> Report {
     let probe = probe_script(config);
     // Separates "Windows down" (laptop off or offline) from "WSL down" (recover).
-    let (windows, output) = thread::scope(|scope| {
+    let (windows, local_crash, output) = thread::scope(|scope| {
         let windows = (MAC && config.windows.is_some()).then(|| scope.spawn(|| crash_report(config)));
+        let local_crash = (!MAC).then(|| scope.spawn(local_crash_report));
         let output =
             if MAC { ssh(config, &probe) } else { run("/bin/sh", &strings(["-s"]), Some(&probe), DEFAULT_TIMEOUT) };
-        (windows.map(|check| check.join().unwrap_or(None)), output)
+        let join = |check: thread::ScopedJoinHandle<_>| check.join().unwrap_or(None);
+        (windows.map(join), local_crash.and_then(join), output)
     });
     let found: Vec<(String, String)> = output
         .as_deref()
@@ -243,6 +266,9 @@ pub fn status(config: &Config) -> Report {
             report["crash"] = crash;
         }
     }
+    if let Some(crash) = local_crash {
+        report["crash"] = crash;
+    }
     if let Err(error) = output {
         report["error"] = error.into();
     }
@@ -263,6 +289,9 @@ pub fn status_text(report: &Value) -> String {
         lines.push(format!("  windows: {windows}"));
     }
     if report["crash"].is_object() {
+        if windows.is_none() {
+            lines.push("  windows crash report:".into());
+        }
         lines.extend(crash_text(&report["crash"]).iter().map(|line| format!("    {line}")));
     }
     if let Some(error) = report["error"].as_str() {
@@ -285,14 +314,15 @@ fn ssh_public_key(text: &str) -> String {
     text.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
 }
 
-/// authorized_keys with any old line for this key replaced by a Tailscale-only entry.
+/// authorized_keys with any old line for this key replaced by a Tailscale-only entry. Reverse
+/// forwards (WSL forward) may listen only on the Mac's loopback.
 fn authorize(existing: &[u8], key: &str) -> Vec<u8> {
     let mut text: Vec<u8> = existing
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty() && !line.windows(key.len()).any(|window| window == key.as_bytes()))
         .flat_map(|line| line.iter().copied().chain(*b"\n"))
         .collect();
-    let options = "from=\"100.64.0.0/10\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding";
+    let options = "from=\"100.64.0.0/10\",no-agent-forwarding,no-X11-forwarding,permitlisten=\"127.0.0.1:*\"";
     text.extend(format!("{options} {key} remote-access-mac\n").as_bytes());
     text
 }
@@ -392,7 +422,7 @@ pub fn start(home: &Path) -> Res<()> {
 
 pub fn install(config: &Config, home: &Path) -> Res<Value> {
     if !MAC {
-        return Err("Install on your Mac. WSL uses status, mac, open, install-helpers and skills-sync.".into());
+        return Err("Install on your Mac.".into());
     }
     let paths = locations(home, true);
     ssh(config, "true\n")?;
@@ -584,13 +614,22 @@ mod tests {
         let quiet = json!({ "lastBoot": "b", "bugcheck": null, "unexpected": [], "restarts": [], "gpu": [] });
         assert_eq!(crash_text(&quiet), ["last boot: b"]);
         assert_eq!(crash_text(&json!({ "error": "x" })), ["crash report: x"]);
+        let output = Output {
+            status: Some(0),
+            stdout: "noise\r\n{\"lastBoot\":\"b\"}\r\n".into(),
+            stderr: String::new(),
+            timed_out: false,
+        };
+        assert_eq!(parse_crash(&output), json!({ "lastBoot": "b" }));
+        let wsl = json!({ "side": "wsl", "host": "h", "services": { "app": "ready" }, "crash": quiet });
+        assert_eq!(status_text(&wsl), "wsl → h\n  app: ready\n  windows crash report:\n    last boot: b");
     }
 
     #[test]
     fn authorize_keeps_other_keys_byte_for_byte_and_replaces_this_one() {
         let existing = b"ssh-rsa AAA caf\xe9\nold ssh-ed25519 KEY remote-access-mac\n\nssh-ed25519 OTHER";
         let text = authorize(existing, "ssh-ed25519 KEY");
-        let expected: &[u8] = b"ssh-rsa AAA caf\xe9\nssh-ed25519 OTHER\nfrom=\"100.64.0.0/10\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 KEY remote-access-mac\n";
+        let expected: &[u8] = b"ssh-rsa AAA caf\xe9\nssh-ed25519 OTHER\nfrom=\"100.64.0.0/10\",no-agent-forwarding,no-X11-forwarding,permitlisten=\"127.0.0.1:*\" ssh-ed25519 KEY remote-access-mac\n";
         assert_eq!(text, expected);
     }
 
